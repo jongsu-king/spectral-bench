@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#e5e6e7">
+  <meta name="description" content="Instrument laboratory for ray tracing and spectroscopy from CCD arrays to terahertz time-domain spectroscopy">
+  <title>Spectral Bench — Instrument Laboratory</title>
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./workbench.css">
+  <script src="./app/runtime.js"></script>
+  <script type="module" src="./app/main.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-content">
+      <span class="app-caption">Spectral Bench</span>
+      <div class="header-actions">
+        <button type="button" class="button header-button" id="open-session" hidden><span data-icon="folder"></span>Open…</button>
+        <button type="button" class="button header-button" id="save-session" hidden><span data-icon="save"></span>Save as…</button>
+        <button type="button" class="button header-button" id="help"><span data-icon="help"></span>Protocol</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <nav id="instruments" class="instruments" aria-label="Instruments"></nav>
+    <section class="workbench" id="workbench" aria-label="3D optical workbench" hidden>
+      <div class="wb-toolbar">
+        <h1>Optical Workbench</h1>
+        <label for="wb-preset">Layout</label><select id="wb-preset"></select>
+        <div class="wb-tool-group" aria-label="Edit history">
+          <button type="button" class="button" id="wb-undo" title="Undo (Ctrl/⌘+Z)" aria-label="Undo">↶</button>
+          <button type="button" class="button" id="wb-redo" title="Redo (Ctrl/⌘+Shift+Z)" aria-label="Redo">↷</button>
+        </div>
+        <span class="wb-toolbar-spacer"></span>
+        <button type="button" class="button" id="wb-matlab">MATLAB code</button>
+        <button type="button" class="button subtle-button" id="wb-reset">Reset layout</button>
+      </div>
+
+      <div class="wb-workspace">
+        <aside class="wb-panel wb-components" aria-labelledby="wb-components-title">
+          <header class="wb-panel-header"><h2 id="wb-components-title">Components</h2><output id="wb-component-count"></output></header>
+          <div class="wb-add"><select id="wb-part-type" aria-label="Component to add"></select><button class="button" type="button" id="wb-add" title="Add selected component">Add</button></div>
+          <ul id="wb-component-list" aria-label="Optical components"></ul>
+        </aside>
+
+        <section class="wb-panel wb-scene" aria-label="3D optical bench viewport">
+          <header class="wb-viewport-toolbar">
+            <div class="wb-tool-group" aria-label="Manipulation tool">
+              <button type="button" class="button" data-wb-tool="move" aria-pressed="true">Move</button>
+              <button type="button" class="button" data-wb-tool="rotate" aria-pressed="false">Rotate</button>
+            </div>
+            <span class="wb-toolbar-spacer"></span>
+            <select id="wb-view" aria-label="Camera view"><option value="perspective">Perspective</option><option value="top">Top</option><option value="front">Front</option><option value="side">Side</option></select>
+            <button type="button" class="button subtle-button" id="wb-fit" title="Reset camera">Home view</button>
+          </header>
+          <div id="wb-viewport" class="wb-viewport"></div>
+          <footer class="wb-viewport-status"><span id="wb-gesture">Drag an optic to move it · Drag empty space to orbit</span><div class="wb-view-options">
+            <label class="view-check"><input id="wb-show-rays" type="checkbox" checked>Rays</label>
+            <label class="view-check"><input id="wb-show-labels" type="checkbox">Labels</label>
+          </div></footer>
+        </section>
+
+        <aside class="wb-panel wb-inspector" aria-labelledby="wb-inspector-title">
+          <header class="wb-panel-header"><h2 id="wb-inspector-title">Inspector</h2><button type="button" id="wb-delete" class="button subtle-button" aria-label="Delete selected component">Delete</button></header>
+          <div id="wb-properties" class="wb-properties"></div>
+        </aside>
+
+        <section class="wb-panel wb-detector" aria-labelledby="wb-detector-title">
+          <header class="wb-panel-header">
+            <h2 id="wb-detector-title">Detector readout</h2>
+            <select id="wb-detector-select" aria-label="Active detector"></select>
+            <span class="wb-toolbar-spacer"></span>
+            <div class="wb-tool-group" aria-label="Detector panel">
+              <button class="button" type="button" data-wb-panel="signal" aria-pressed="true">Signal</button>
+              <button class="button" type="button" data-wb-panel="distance" aria-pressed="false">Distances</button>
+            </div>
+            <button type="button" class="button subtle-button" id="wb-export">Export CSV</button>
+          </header>
+          <div id="wb-readings" class="wb-readings"></div>
+          <div class="wb-detector-plots" id="wb-signal">
+            <figure><figcaption>Sensor plane <output id="wb-sensor-cursor"></output></figcaption><canvas id="wb-spot" role="img" aria-label="Detector irradiance map"></canvas></figure>
+            <figure><figcaption>Detected spectrum</figcaption><canvas id="wb-spectrum" role="img" aria-label="Detected optical power by wavelength"></canvas></figure>
+          </div>
+          <div class="wb-distance" id="wb-distance" hidden>
+            <div class="wb-distance-toolbar">
+              <h3>Ray path</h3><label for="wb-ray-index">Ray</label><input id="wb-ray-index" type="number" min="1" step="1"><output id="wb-ray-info"></output>
+            </div>
+            <div class="wb-table-scroll"><table><thead><tr><th>From</th><th>To</th><th>Length (mm)</th><th>Travelled (mm)</th><th>ΔX / ΔY / ΔZ (mm)</th></tr></thead><tbody id="wb-segments"></tbody></table></div>
+            <div class="wb-distance-toolbar wb-sweep-controls">
+              <h3>Detector sweep</h3>
+              <label>From <input id="wb-sweep-start" type="number" value="-120" step="5"></label>
+              <label>To <input id="wb-sweep-end" type="number" value="120" step="5"></label>
+              <label>Step <input id="wb-sweep-step" type="number" value="10" min="0.5" step="0.5"></label>
+              <span>mm</span><button type="button" class="button" id="wb-sweep">Run sweep</button>
+            </div>
+            <p class="wb-sweep-state" id="wb-sweep-state" role="status">Offsets are along the detector normal.</p>
+            <div id="wb-sweep-plot" class="wb-sweep-plot" hidden></div>
+            <div class="wb-table-scroll" id="wb-sweep-table" hidden><table><thead><tr><th>Offset (mm)</th><th>Power (mW)</th><th>Rays</th><th>RMS radius (mm)</th><th>Detector X / Y / Z (mm)</th></tr></thead><tbody id="wb-sweep-rows"></tbody></table></div>
+          </div>
+        </section>
+      </div>
+    </section>
+    <section id="instrument-workspace" aria-label="Instrument measurement" data-view="optics" hidden>
+    <div class="instrument-toolbar">
+      <h1 id="instrument-name">UV–Vis Spectrophotometer</h1>
+      <div class="instrument-views" aria-label="Instrument view">
+        <button type="button" class="button" data-instrument-view="optics" aria-pressed="true" aria-controls="instrument-bench">3D Ray Tracing</button>
+        <button type="button" class="button" data-instrument-view="acquire" aria-pressed="false">Acquisition</button>
+      </div>
+    </div>
+
+    <div class="workspace-grid">
+      <aside class="panel controls-panel" aria-labelledby="controls-heading">
+        <div class="panel-header">
+          <h2 id="controls-heading">Settings</h2>
+          <button type="button" class="button subtle-button" id="reset">Reset</button>
+        </div>
+        <div class="acquisition instrument-status-bar">
+          <div class="acquisition-status" id="acquisition-status" role="status"></div>
+          <div id="capture-buttons" class="capture-buttons">
+            <button type="button" class="button" id="dark" hidden><span data-icon="moon"></span>Dark</button>
+            <button type="button" class="button" id="reference"><span data-icon="target"></span><span id="reference-label">Acquire reference</span></button>
+            <button type="button" class="button primary-button" id="measure"><span data-icon="play"></span><span id="measure-label">Acquire sample</span></button>
+            <button type="button" class="button stop-button" id="stop-scan" disabled><span data-icon="stop"></span>Stop</button>
+          </div>
+          <progress id="scan-progress" class="scan-progress" max="1" value="0" aria-label="Acquisition progress" hidden></progress>
+        </div>
+        <section class="sample-settings" aria-label="Sample library">
+          <label id="sample-label" for="sample-preset">Sample</label>
+          <select id="sample-preset"></select>
+          <details id="sample-details" hidden>
+            <summary>Source &amp; model notes</summary>
+            <p id="sample-note"></p>
+            <a id="sample-source" target="_blank" rel="noopener noreferrer"></a>
+          </details>
+        </section>
+        <div class="parameters" id="controls"></div>
+        <div class="analysis-engine" id="analysis-engine" hidden>
+          <label class="parameter-title" for="fft-engine">FFT engine</label>
+          <select id="fft-engine"><option value="c">Native C</option><option value="matlab">MATLAB</option></select>
+          <p id="engine-status" role="status" hidden></p>
+          <button type="button" class="button subtle-button" id="matlab-run" hidden><span data-icon="play"></span>Run MATLAB model</button>
+        </div>
+      </aside>
+
+      <section class="panel bench-panel" id="instrument-bench" aria-labelledby="bench-heading" hidden>
+        <div class="panel-header">
+          <h2 id="bench-heading"><span data-icon="bench"></span>Optical bench</h2>
+          <div class="bench-actions">
+            <div class="instrument-tools" aria-label="Manipulation tool">
+              <button type="button" class="button" data-instrument-tool="move" aria-pressed="true">Move</button>
+              <button type="button" class="button" data-instrument-tool="rotate" aria-pressed="false">Rotate</button>
+              <button type="button" class="button" data-instrument-tool="ray" aria-pressed="false">Inspect ray</button>
+            </div>
+            <div class="instrument-history" aria-label="Optical layout edit history">
+              <button type="button" class="button" id="instrument-undo" aria-label="Undo optic edit" title="Undo optic edit (Ctrl/⌘+Z)" disabled>↶</button>
+              <button type="button" class="button" id="instrument-redo" aria-label="Redo optic edit" title="Redo optic edit (Ctrl/⌘+Shift+Z)" disabled>↷</button>
+            </div>
+            <select id="instrument-view" aria-label="Instrument camera view"><option value="perspective">Perspective</option><option value="top">Top</option><option value="front">Front</option><option value="side">Side</option></select>
+            <button type="button" class="button subtle-button" id="instrument-fit">Home view</button>
+            <button type="button" class="button subtle-button" id="instrument-to-3d">Open in Workbench</button>
+            <button type="button" class="button subtle-button" id="reset-layout" hidden><span data-icon="reset"></span>Reset layout</button>
+            <button type="button" class="button subtle-button" id="photon-play" aria-pressed="false" hidden><span data-icon="play"></span><span id="photon-label">Replay photons</span></button>
+            <label class="view-check"><input id="show-rays" type="checkbox" checked>Rays</label>
+            <label class="view-check"><input id="show-labels" type="checkbox">Labels</label>
+          </div>
+        </div>
+        <div class="instrument-edit-row">
+          <div class="instrument-3d-viewport" id="instrument-3d"></div>
+          <aside class="instrument-optics" aria-label="Instrument optics">
+            <div class="instrument-optics-bar">
+              <label for="instrument-part-type">Add optic</label>
+              <select id="instrument-part-type"></select><button type="button" class="button" id="instrument-add">Add</button>
+            </div>
+            <div class="instrument-optics-bar instrument-selected">
+              <select id="instrument-part" aria-label="Selected optical component"></select>
+              <button type="button" class="button subtle-button" id="instrument-delete">Delete</button>
+            </div>
+            <div id="instrument-properties" class="instrument-properties"></div>
+          </aside>
+        </div>
+        <div class="bench-caption">
+          <span class="part-icon" data-icon="cursor"></span>
+          <div><strong id="part-label">Move or inspect an optic</strong><p id="part-description">Drag a component to change the path. Select an optic or ray to inspect it.</p></div>
+          <output class="bench-coordinate" id="bench-coordinate"></output>
+        </div>
+        <div class="instrument-paths" id="instrument-paths" aria-label="Mean traced path lengths"></div>
+        <details class="instrument-ray-inspector" id="instrument-ray-inspector">
+          <summary>Ray path <span id="instrument-ray-count"></span></summary>
+          <div class="instrument-ray-toolbar">
+            <label for="instrument-ray-index">Ray number</label>
+            <input type="number" min="1" step="1" id="instrument-ray-index" aria-describedby="instrument-ray-status" disabled>
+            <button type="button" class="button" id="instrument-ray-clear" disabled>Clear selection</button>
+            <output id="instrument-ray-status" for="instrument-ray-index" aria-live="polite"></output>
+          </div>
+          <div class="instrument-ray-table" id="instrument-ray-table" hidden>
+            <table aria-label="Selected ray segments">
+              <thead><tr><th scope="col">Segment</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Length (mm)</th><th scope="col">Total (mm)</th></tr></thead>
+              <tbody id="instrument-ray-segments"></tbody>
+            </table>
+          </div>
+        </details>
+        <details class="alignment-sweep" id="instrument-alignment-sweep">
+          <summary>Alignment sweep</summary>
+          <div class="alignment-sweep-controls">
+            <label for="alignment-sweep-part">Optic <select id="alignment-sweep-part"></select></label>
+            <label for="alignment-sweep-detector">Detector <select id="alignment-sweep-detector"></select></label>
+            <label for="alignment-sweep-axis">Axis <select id="alignment-sweep-axis">
+              <option value="x">Move X</option><option value="y">Move Y</option><option value="z">Move Z</option>
+              <option value="rx">Rotate X</option><option value="ry">Rotate Y</option><option value="rz">Rotate Z</option>
+            </select></label>
+            <label for="alignment-sweep-min"><span id="alignment-sweep-min-label">From (mm)</span> <input type="number" id="alignment-sweep-min" value="-20" step="any"></label>
+            <label for="alignment-sweep-max"><span id="alignment-sweep-max-label">To (mm)</span> <input type="number" id="alignment-sweep-max" value="20" step="any"></label>
+            <label for="alignment-sweep-steps">Points <input type="number" id="alignment-sweep-steps" value="11" min="2" max="61" step="1"></label>
+            <button type="button" class="button primary-button" id="alignment-sweep-run">Run sweep</button>
+            <button type="button" class="button" id="alignment-sweep-cancel" disabled>Cancel</button>
+          </div>
+          <output class="alignment-sweep-status" id="alignment-sweep-status" aria-live="polite">Offsets are relative to the current pose.</output>
+          <div id="alignment-sweep-results" hidden>
+            <div class="alignment-sweep-controls alignment-sweep-results-tools">
+              <label for="alignment-sweep-metric">Plot <select id="alignment-sweep-metric">
+                <option value="transfer">Optical transfer</option><option value="power">Detector power</option>
+                <option value="count">Detected rays</option><option value="rms">RMS spot radius</option>
+              </select></label>
+              <button type="button" class="button" id="alignment-sweep-apply" disabled>Apply offset</button>
+              <button type="button" class="button" id="alignment-sweep-export">Export sweep CSV</button>
+            </div>
+            <div class="alignment-sweep-result-grid">
+              <div id="alignment-sweep-plot" class="plots"></div>
+              <div class="alignment-sweep-table">
+                <table aria-label="Alignment sweep results"><thead><tr><th scope="col" id="alignment-sweep-offset-heading">Offset (mm)</th>
+                  <th scope="col">Transfer (%)</th><th scope="col">Power (mW)</th><th scope="col">Hits</th><th scope="col">RMS (mm)</th>
+                </tr></thead><tbody id="alignment-sweep-rows"></tbody></table>
+              </div>
+            </div>
+          </div>
+        </details>
+        <p id="photon-state" class="photon-state" role="status" hidden></p>
+      </section>
+
+      <section class="results" aria-labelledby="results-heading">
+        <div class="results-header plot-tools">
+          <h2 id="results-heading" class="sr-only">Measurement</h2>
+          <div class="plot-selection">
+            <label for="plot-selection">Display</label>
+            <select id="plot-selection"></select>
+          </div>
+          <div class="plot-display" aria-label="Measurement display mode">
+            <button type="button" class="button" data-plot-display="graph" aria-pressed="true">Graph</button>
+            <button type="button" class="button" data-plot-display="table" aria-pressed="false">Data</button>
+            <button type="button" class="button" data-plot-display="fit" aria-pressed="false">Fit</button>
+            <button type="button" class="button" data-plot-display="map" aria-pressed="false">3D map</button>
+          </div>
+          <div class="instrument-export-actions plot-commands">
+            <button type="button" class="button subtle-button" id="instrument-matlab">MATLAB…</button>
+            <button class="button" type="button" id="measurement-import">Import CSV…</button>
+            <button type="button" class="button subtle-button" id="export" disabled><span data-icon="download"></span>Export CSV</button>
+          </div>
+        </div>
+        <div class="trace-memory" aria-label="Trace memory">
+          <strong class="trace-memory-title">Trace memory</strong>
+          <output class="trace-memory-status" id="trace-memory-status" aria-live="polite">No trace stored</output>
+          <div class="trace-memory-actions">
+            <button class="button" type="button" id="trace-store" disabled>Store trace</button>
+            <label class="trace-memory-toggle"><input type="checkbox" id="trace-overlay" checked disabled>Overlay</label>
+            <button class="button subtle-button" type="button" id="trace-clear" disabled>Clear</button>
+          </div>
+        </div>
+        <input type="file" id="measurement-file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" hidden>
+        <div id="measured-trace" class="measured-trace" aria-label="Measured data" hidden>
+          <output id="measurement-import-status" class="measured-trace-status" aria-live="polite">No measured trace</output>
+          <label class="trace-memory-toggle"><input type="checkbox" id="measurement-overlay" checked disabled>Overlay</label>
+          <button class="button subtle-button" type="button" id="measurement-clear" disabled>Clear</button>
+          <output id="measurement-comparison" class="measured-trace-comparison"></output>
+        </div>
+        <div class="metrics" id="metrics"></div>
+        <div id="fit-panel" class="analysis-panel" hidden>
+          <div class="analysis-tools">
+            <label>Trace <select id="fit-trace"></select></label>
+            <label>Model <select id="fit-model"></select></label>
+            <label>From <input type="number" id="fit-min" step="any"></label>
+            <label>To <input type="number" id="fit-max" step="any"></label>
+            <button type="button" class="button" id="fit-cursors">Use A/B</button>
+            <button type="button" class="button primary-button" id="fit-run">Fit trace</button>
+          </div>
+          <output id="fit-status" class="analysis-status" aria-live="polite"></output>
+          <div id="fit-parameters" class="fit-parameters"></div>
+        </div>
+        <div id="map-panel" class="analysis-panel" hidden>
+          <div class="analysis-tools" id="map-controls">
+            <label>Vary <select id="map-axis"></select></label>
+            <label>From <input type="number" id="map-min" step="any"></label>
+            <label>To <input type="number" id="map-max" step="any"></label>
+            <label>Steps <input type="number" id="map-steps" min="5" max="31" step="1" value="13"></label>
+            <button type="button" class="button primary-button" id="map-run">Run sweep</button>
+            <button type="button" class="button" id="map-stop" hidden>Stop</button>
+          </div>
+          <div class="analysis-status-row">
+            <output id="map-status" class="analysis-status" aria-live="polite"></output>
+            <button type="button" class="button" id="map-csv" disabled>Export map CSV</button>
+          </div>
+          <div id="surface-plot" hidden></div>
+        </div>
+        <div class="plots" id="plots"></div>
+        <div id="plot-table" hidden></div>
+        <p id="model-note" class="model-note"></p>
+        <div id="transfer" class="transfer" hidden></div>
+        <details class="run-log" id="run-log" hidden><summary>Acquisition log</summary><ol id="run-entries"></ol></details>
+      </section>
+    </div>
+    <footer class="workspace-footer workspace-status"><span class="simulation-label"><span></span>Simulation</span><a id="source-link" target="_blank" rel="noopener noreferrer">Instrument reference ↗</a></footer>
+    </section>
+  </main>
+  <div class="file-status" id="file-status" role="status" hidden></div>
+
+  <dialog id="measurement-import-dialog" aria-labelledby="measurement-import-title">
+    <div class="dialog-head"><h2 id="measurement-import-title">Import measured trace</h2><form method="dialog"><button class="button icon-button" aria-label="Close" data-icon="close"></button></form></div>
+    <p id="measurement-file-name"></p>
+    <div class="measurement-import-fields">
+      <div id="measurement-columns">
+        <label for="measurement-x-column">X column</label><select id="measurement-x-column"></select>
+        <label for="measurement-y-column">Y column</label><select id="measurement-y-column"></select>
+      </div>
+      <label for="measurement-trace-select" id="measurement-trace-label" hidden>CSV trace</label>
+      <select id="measurement-trace-select" hidden></select>
+      <label for="measurement-target">Compare with</label><select id="measurement-target"></select>
+    </div>
+    <p id="measurement-target-axes"></p>
+    <output id="measurement-import-preview" class="analysis-status" aria-live="polite"></output>
+    <div class="measurement-import-actions">
+      <form method="dialog"><button type="submit" class="button">Cancel</button></form>
+      <button type="button" class="button primary-button" id="measurement-apply" disabled>Apply overlay</button>
+    </div>
+  </dialog>
+
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <div class="dialog-head"><h2 id="help-title">Measurement protocol</h2><form method="dialog"><button class="button icon-button" aria-label="Close" data-icon="close"></button></form></div>
+    <p id="protocol-description"></p>
+    <ol id="protocol-steps"></ol>
+    <p id="protocol-observation"></p>
+    <p class="protocol-hint">Use 3D Ray Tracing to move or rotate optics and inspect ray paths. Capture a fresh reference after changing the layout.</p>
+  </dialog>
+  <dialog id="matlab-dialog" class="matlab-dialog" aria-labelledby="matlab-title">
+    <div class="dialog-head"><h2 id="matlab-title">MATLAB simulation</h2><form method="dialog"><button class="button icon-button" aria-label="Close" data-icon="close"></button></form></div>
+    <p id="matlab-summary"></p>
+    <div class="plots" id="matlab-plots"></div>
+  </dialog>
+  <dialog id="wb-code-dialog" class="wb-code-dialog" aria-labelledby="wb-code-title">
+    <div class="dialog-head"><h2 id="wb-code-title">MATLAB ray trace</h2><form method="dialog"><button class="button icon-button" aria-label="Close" data-icon="close"></button></form></div>
+    <p id="wb-code-description">Standalone script for this layout. Run it in MATLAB to trace rays and repeat the detector sweep.</p>
+    <textarea id="wb-code" aria-label="Generated MATLAB script" readonly spellcheck="false"></textarea>
+    <div class="wb-code-actions"><button type="button" class="button" id="wb-copy-code">Copy code</button><button type="button" class="button" id="wb-save-code">Save .m file</button></div>
+  </dialog>
+</body>
+</html>
