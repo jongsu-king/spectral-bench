@@ -90,6 +90,18 @@ test('finite-X missing-Y observations survive import, restore, comparison, and i
   assert.equal(validateMeasurementTrace({ x: [0, 1, 2], y: [0, 'missing', 2] }), null);
 });
 
+test('an explicitly delimited all-missing row breaks integration while blank formatting does not replace the header', async () => {
+  const parsed = parseMeasurementFile(',\n\nX,Y\n0,0\n1,2\n,\n3,2\n4,0\n');
+  assert.deepEqual(parsed.columns, ['X', 'Y']);
+  const trace = measurementPairs(parsed, 0, 1);
+  assert.deepEqual(trace.x, [0, 1, null, 3, 4]);
+  assert.deepEqual(trace.y, [0, 2, null, 2, 0]);
+  const { analyzeTrace } = await import('../dist/app/trace-analysis.js');
+  const result = analyzeTrace(trace);
+  assert.equal(result.integral.net, 2);
+  assert.equal(result.coverage, 0.5);
+});
+
 test('unknown X creates a persistent run barrier without collapsing duplicate finite observations', async () => {
   const parsed = parseMeasurementFile('X,Y\n4,1\n3,1\nNaN,7\n1,1\n0,1');
   const trace = measurementPairs(parsed, 0, 1);

@@ -50,7 +50,9 @@ function readRows(text, delimiter, limit) {
 
   function finishRow() {
     finishField();
-    if (fields.some(value => value !== '')) rows.push({ fields, line: rowLine });
+    // A delimited all-missing observation is a gap, whereas an ordinary blank
+    // line is formatting. Dropping the former would connect disconnected data.
+    if (fields.length > 1 || fields.some(value => value !== '')) rows.push({ fields, line: rowLine });
     fields = [];
   }
 
@@ -201,6 +203,8 @@ export function parseMeasurementFile(text) {
   const delimiter = selectDelimiter(content);
   const rows = readRows(content, delimiter, MAX_ROWS + 1);
   if (rows.length > MAX_ROWS) throw new Error('The measurement file has too many rows.');
+  while (rows[0]?.fields.every(value => value === '')) rows.shift();
+  if (!rows.length) throw new Error('The measurement file needs at least two rows with numeric X/Y values.');
 
   const header = rows[0].fields;
   if (header.length * rows.length > 1_000_000) throw new Error('The measurement file has too many cells.');
