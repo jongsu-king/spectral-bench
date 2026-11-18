@@ -261,6 +261,11 @@ svg { display: block; }
 .scan-progress { display: block; width: 100%; height: 5px; margin: 5px 0 0; accent-color: var(--focus); }
 .instrument-status-bar { display: grid; min-width: 0; color: var(--muted); font-size: 10px; }
 .instrument-status-bar > output { font: 500 10px var(--mono); }
+.repeat-control { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin: 0 0 5px; font-size: 11px; }
+.repeat-control input { width: 54px; min-height: 23px; text-align: right; font: 11px var(--mono); border: 1px solid var(--border); background: var(--well); color: var(--text); }
+.repeat-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; padding: 4px 7px; border-bottom: 1px solid var(--line); background: var(--well); font-size: 11px; }
+.repeat-summary select { min-height: 23px; border: 1px solid var(--border); background: var(--well); color: var(--text); }
+.repeat-summary output { color: var(--muted); font: 10px var(--mono); }
 
 .results { grid-area: results; min-width: 0; background: var(--well); }
 .results-header, .plot-tools, .plot-commands, .plot-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 7px; min-width: 0; }

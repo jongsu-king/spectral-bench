@@ -7,6 +7,7 @@ import importlib.util
 import math
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import struct
 import subprocess
@@ -19,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
 RELEASES = ROOT / "releases"
 APP_NAME = "Spectral Bench"
+APP_VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def native_library() -> Path:
@@ -169,7 +171,7 @@ def build_bundle(library: Path) -> Path:
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--windowed", "--onedir",
         "--name", APP_NAME, "--distpath", str(RELEASES),
         "--workpath", str(BUILD / "pyinstaller"), "--specpath", str(BUILD),
-        "--add-data", f"{assets}:web", "--add-data", f"{matlab}:matlab",
+        "--add-data", f"{assets}:web", "--add-data", f"{matlab}:matlab", "--add-data", f"{ROOT / 'VERSION'}:.",
         "--add-binary", f"{library}:native",
         "--icon", str(icon), "--noupx",
     ]
@@ -177,7 +179,16 @@ def build_bundle(library: Path) -> Path:
         arguments.extend(["--osx-bundle-identifier", "local.spectralbench.app"])
     subprocess.run([*arguments, str(entry)], cwd=ROOT, check=True)
     if sys.platform == "darwin":
-        return RELEASES / f"{APP_NAME}.app"
+        bundle = RELEASES / f"{APP_NAME}.app"
+        plist_path = bundle / "Contents" / "Info.plist"
+        with plist_path.open("rb") as source:
+            info = plistlib.load(source)
+        info["CFBundleShortVersionString"] = APP_VERSION
+        info["CFBundleVersion"] = APP_VERSION
+        with plist_path.open("wb") as destination:
+            plistlib.dump(info, destination)
+        subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(bundle)], check=True)
+        return bundle
     return RELEASES / APP_NAME / f"{APP_NAME}.exe"
 
 

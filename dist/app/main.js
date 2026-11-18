@@ -6,6 +6,7 @@ import { protocols } from './protocols.js';
 import { createWorkbench } from './workbench3d.js';
 import { createViewport3D } from './viewport3d.js';
 import { createRayInspector } from './ray-inspector.js';
+import { createRepeatAccumulator } from './repeat-acquisition.js';
 import { createAlignmentSweep } from './alignment-sweep.js';
 import { addMeasuredOverlay, createMeasurementImport, measuredComparison, restoreMeasuredTrace } from './measurement-import.js';
 import { createInstrumentScene, traceInstrumentOptics } from './instrument-optics.js';
@@ -152,6 +153,7 @@ function makeState(id) {
   return {
     settings, layout: emptyEdits(), seed: 631, reference: null, dark: null, mode: 'sample', acquired: false, measured: null, runs: [],
     stopped: false, undo: [], redo: [], gesture: null, memory: null, overlay: true, cursors: new Map(),
+    views: new Map(), repeatCount: 1, repeatDisplay: 'mean', repeatBatch: null,
     view: 'optics', display: 'graph', plot: null, measurement: null, measuredOverlay: true,
   };
 }
@@ -505,6 +507,7 @@ function refreshStatus() {
   if (state.reference) bits.push(referenceChanged(state) ? 'Reference stored · optics changed' : 'Reference stored');
   if (acquisition) {
     bits.push({ sample: 'Acquiring sample', reference: 'Recording reference', dark: 'Recording dark' }[acquisition.mode]);
+    if (acquisition.total > 1) bits.push(acquisition.completed + ' / ' + acquisition.total + ' complete');
   } else if (state.stopped) {
     bits.push('Acquisition stopped');
   } else if (state.acquired) {
@@ -516,9 +519,11 @@ function refreshStatus() {
   status.dataset.ready = String(Boolean(state.acquired || state.reference));
   status.dataset.phase = acquisition ? 'acquiring' : state.stopped ? 'stopped' : state.acquired || state.reference ? 'ready' : 'preview';
   el('reference-label').textContent = referenceLabel();
-  el('measure-label').textContent = acquisition?.mode === 'sample' ? 'Acquiring…' : 'Acquire sample';
+  el('measure-label').textContent = acquisition?.mode === 'sample' ? 'Acquiring…' : state.repeatCount > 1 ? 'Acquire ' + state.repeatCount + ' scans' : 'Acquire sample';
   for (const id of ['reference', 'measure', 'dark']) el(id).disabled = Boolean(acquisition);
   el('stop-scan').disabled = !acquisition;
+  el('repeat-count').disabled = Boolean(acquisition);
+  if (document.activeElement !== el('repeat-count')) el('repeat-count').value = state.repeatCount;
   updateTraceMemoryControls(state);
 }
 
@@ -563,7 +568,7 @@ async function changeEngine() {
   setFftBackend(next);
   for (const id of ['ftir', 'thz']) {
     const state = states.get(id);
-    if (state) state.measured = null;
+    if (state) { state.measured = null; state.repeatBatch = null; state.acquired = false; }
   }
   updateEngineControls();
   refreshResult();
@@ -595,7 +600,8 @@ function renderMetrics(metrics) {
   for (const metric of metrics) {
     const item = htmlElement('div', 'metric');
     const value = typeof metric.value === 'number' ? formatNumber(metric.value, 5) : String(metric.value ?? '—');
-    item.append(htmlElement('span', '', metric.label), htmlElement('strong', '', value));
+    const spread = Number.isFinite(metric.deviation) ? ' ± ' + formatNumber(metric.deviation, 3) : '';
+    item.append(htmlElement('span', '', metric.label), htmlElement('strong', '', value + spread));
     if (metric.unit && value !== '—') item.append(htmlElement('span', 'metric-unit', metric.unit));
     container.append(item);
   }
@@ -623,6 +629,7 @@ function renderTransfer(result) {
     next.mode = 'sample';
     next.acquired = false;
     next.measured = null;
+    next.repeatBatch = null;
     openStation(target);
   });
   container.append(button);
@@ -636,7 +643,7 @@ function renderRunLog(state) {
   const names = { dark: 'Dark scan', reference: 'Reference scan', sample: 'Sample scan' };
   for (const run of state.runs) {
     const stamp = new Date(run.timestamp).toLocaleString('en-US');
-    list.append(htmlElement('li', '', stamp + ' · ' + names[run.mode]));
+    list.append(htmlElement('li', '', stamp + ' · ' + names[run.mode] + (run.count > 1 ? ' · ' + run.count + ' scans' : '')));
   }
 }
 
@@ -707,7 +714,7 @@ function renderDetectorPlots() {
       probe = selected;
       refreshBench();
       if (state.display === 'fit') plotAnalysis.syncFitCursors();
-    }, { cursors: state.cursors });
+    }, { cursors: state.cursors, views: state.views });
   }
   updateTraceMemoryControls(state, stored.count);
   measurementImport.update(state.measurement, state.measuredOverlay, comparison);
@@ -727,12 +734,30 @@ function storeTrace() {
   renderDetectorPlots();
 }
 
+function repeatedResult(state) {
+  const batch = state.mode === 'sample' && state.repeatBatch;
+  if (!batch || state.repeatDisplay === 'latest') return state.measured;
+  const { statistics } = batch;
+  const latest = state.measured;
+  if (state.repeatDisplay === 'sd') return {
+    ...latest, charts: statistics.deviationCharts,
+    metrics: [{ label: 'Completed scans', value: statistics.count }, { label: 'Statistic', value: 'Sample SD' }],
+    note: 'Sample standard deviation across ' + statistics.count + ' acquisitions. Cells with fewer than two finite observations are masked.',
+    peak: undefined,
+  };
+  return { ...latest, charts: statistics.charts,
+    metrics: statistics.metrics.map(metric => ({ ...metric,
+      deviation: statistics.metricDeviations?.find(item => item.label === metric.label && item.unit === metric.unit)?.value })),
+    note: 'Mean of ' + statistics.count + ' processed acquisitions. Model-fit curves and numeric metrics are means of the per-scan results. ' + (latest.note ?? ''),
+  };
+}
+
 function refreshResult() {
   const state = stateOf();
   raySelection = null;
   currentNominal = createInstrumentScene(station, state.settings);
   currentTrace = traceOptics(station, state.settings, state.layout, state.mode, currentNominal);
-  currentResult = state.measured ?? simulate(state, currentTrace, state.mode);
+  currentResult = repeatedResult(state) ?? simulate(state, currentTrace, state.mode);
   refreshBench();
   const metrics = currentResult.metrics ?? [];
   renderMetrics(state.mode === 'dark' ? metrics : [{ label: 'Optical transfer', value: 100 * currentTrace.coupling, unit: '%' }, ...metrics]);
@@ -743,6 +768,10 @@ function refreshResult() {
   el('photon-play').hidden = station !== 'trpl' || state.mode !== 'sample';
   renderRunLog(state);
   renderTransfer(currentResult);
+  const batch = state.mode === 'sample' && state.repeatBatch;
+  el('repeat-summary').hidden = !batch;
+  el('repeat-display').value = state.repeatDisplay;
+  el('repeat-status').textContent = batch ? batch.seeds.length + ' completed scans · seed ' + batch.seeds[0] + '–' + batch.seeds.at(-1) : '';
   refreshStatus();
 }
 
@@ -826,6 +855,7 @@ function geometryEdited() {
   state.mode = 'sample';
   state.acquired = false;
   state.measured = null;
+  state.repeatBatch = null;
   state.stopped = false;
   probe = null;
   if (!renderPending) {
@@ -1003,29 +1033,49 @@ function capture(mode) {
   const state = stateOf();
   state.stopped = false;
   const duration = station === 'thz' || station === 'trpl' ? 850 : 590;
-  const start = performance.now();
-  acquisition = { mode };
+  const record = { mode, total: mode === 'sample' ? state.repeatCount : 1, completed: 0, seeds: [],
+    accumulator: createRepeatAccumulator(), start: performance.now(), trace: traceOptics(station, state.settings, state.layout, mode, currentNominal) };
+  acquisition = record;
   progress.hidden = false;
   refreshStatus();
 
   function update(now) {
-    const fraction = Math.min(1, (now - start) / duration);
-    progress.value = fraction;
+    if (acquisition !== record) return;
+    const fraction = Math.min(1, (now - record.start) / duration);
+    progress.value = (record.completed + fraction) / record.total;
     if (fraction < 1) {
       scanFrame = requestAnimationFrame(update);
       return;
     }
-    const trace = traceOptics(station, state.settings, state.layout, mode, currentNominal);
-    state.seed += 1;
-    const result = simulate(state, trace, mode);
-    if (mode !== 'sample') state[mode] = captureSnapshot(state.settings, state.layout, state.seed, trace, result);
-    state.mode = mode;
-    state.measured = result;
-    state.acquired = mode === 'sample';
-    state.runs = [{ mode, timestamp: Date.now() }, ...state.runs].slice(0, 20);
-    probe = null;
-    cancelScan();
-    refreshResult();
+    try {
+      const seed = state.seed + record.completed + 1;
+      const result = runModel(station, state.settings, seed, record.trace, mode, activeReference(state, mode), state.dark);
+      record.seeds.push(seed);
+      if (record.total > 1) record.accumulator.add(result);
+      record.completed++;
+      if (record.completed < record.total) {
+        record.start = performance.now();
+        refreshStatus();
+        scanFrame = requestAnimationFrame(update);
+        return;
+      }
+      const statistics = record.total > 1 ? record.accumulator.result() : null;
+      state.seed = seed;
+      if (mode !== 'sample') state[mode] = captureSnapshot(state.settings, state.layout, state.seed, record.trace, result);
+      state.mode = mode;
+      state.measured = result;
+      state.repeatBatch = statistics ? { seeds: record.seeds, statistics } : null;
+      state.acquired = mode === 'sample';
+      state.runs = [{ mode, count: record.total, timestamp: Date.now() }, ...state.runs].slice(0, 20);
+      probe = null;
+      cancelScan();
+      refreshResult();
+    } catch (error) {
+      cancelScan();
+      state.stopped = true;
+      refreshStatus();
+      fileFeedback(error.message || 'The acquisition could not be completed.');
+    }
   }
 
   scanFrame = requestAnimationFrame(update);
@@ -1054,6 +1104,8 @@ function sessionJson() {
     reference: captureRecord(state.reference), dark: captureRecord(state.dark),
     memory: state.memory, overlay: state.overlay, view: state.view, display: state.display, plot: state.plot,
     measurement: state.measurement, measuredOverlay: state.measuredOverlay,
+    repeatCount: state.repeatCount, repeatDisplay: state.repeatDisplay, repeatSeeds: state.repeatBatch?.seeds,
+    plotViews: [...state.views],
   }]));
   return JSON.stringify({ format: 'spectral-bench', version: 1,
     instrument: workbenchActive ? 'workbench' : station, instruments, workbench: workbench.serialize() });
@@ -1082,6 +1134,27 @@ function validSeed(value) {
   return Number.isSafeInteger(value) && value >= 0 && value < 1e9 ? value : 631;
 }
 
+function restoredRepeatSeeds(value, finalSeed) {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 25 || value.at(-1) !== finalSeed) return null;
+  return value.every((seed, index) => Number.isSafeInteger(seed) && seed >= 0 && seed < 1e9 &&
+    (index === 0 || seed === value[index - 1] + 1)) ? value : null;
+}
+
+function restorePlotViews(saved) {
+  const views = new Map();
+  if (!Array.isArray(saved)) return views;
+  const validRange = range => range == null || (Array.isArray(range) && range.length === 2 &&
+    range.every(Number.isFinite) && range[0] < range[1]);
+  for (const entry of saved.slice(0, 50)) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue;
+    const [key, value] = entry;
+    if (typeof key !== 'string' || key.length > 500 || !value || !validRange(value.x) || !validRange(value.y)) continue;
+    if (value.logY && value.y && value.y[0] <= 0) continue;
+    views.set(key, { x: value.x ?? null, y: value.y ?? null, logY: value.logY === true });
+  }
+  return views;
+}
+
 function restoreSession(content) {
   const data = JSON.parse(content);
   if (data?.format !== 'spectral-bench' || data.version !== 1 || !data.instruments ||
@@ -1108,6 +1181,26 @@ function restoreSession(content) {
     state.mode = saved.mode === 'reference' && state.reference ? 'reference' : saved.mode === 'dark' && state.dark ? 'dark' : 'sample';
     state.measured = state.mode !== 'sample' ? state[state.mode].result : null;
     state.acquired = state.mode === 'sample' && saved.acquired === true;
+    state.repeatCount = Number.isInteger(saved.repeatCount) ? Math.min(25, Math.max(1, saved.repeatCount)) : 1;
+    state.repeatDisplay = ['latest', 'sd'].includes(saved.repeatDisplay) ? saved.repeatDisplay : 'mean';
+    state.views = restorePlotViews(saved.plotViews);
+    const seeds = state.acquired && restoredRepeatSeeds(saved.repeatSeeds, state.seed);
+    if (seeds) {
+      const accumulator = createRepeatAccumulator();
+      const trace = traceOptics(id, state.settings, state.layout, 'sample');
+      const nominal = createInstrumentScene(id, state.settings);
+      let ref = state.reference;
+      if (!ref && hasEdits(state.layout) && ['uv', 'ftir', 'thz'].includes(id)) {
+        const refTrace = traceOptics(id, state.settings, emptyEdits(), 'reference', nominal);
+        ref = captureSnapshot(state.settings, emptyEdits(), 631, refTrace,
+          runModel(id, state.settings, 631, refTrace, 'reference', null, state.dark));
+      }
+      for (const seed of seeds) {
+        state.measured = runModel(id, state.settings, seed, trace, 'sample', ref, state.dark);
+        accumulator.add(state.measured);
+      }
+      state.repeatBatch = { seeds, statistics: accumulator.result() };
+    }
     const memory = saved.memory;
     if (Number.isFinite(memory?.timestamp) && Math.abs(memory.timestamp) <= 8.64e15) {
       const charts = snapshotLineCharts(memory.charts);
@@ -1123,7 +1216,8 @@ function restoreSession(content) {
     state.display = ['table', 'fit', 'map'].includes(saved.display) ? saved.display : 'graph';
     state.plot = saved.plot === '*' || (Number.isInteger(saved.plot) && saved.plot >= 0 && saved.plot <= 20) ? saved.plot : null;
     state.runs = Array.isArray(saved.runs) ? saved.runs.filter(run =>
-      Number.isFinite(run?.timestamp) && ['dark', 'reference', 'sample'].includes(run.mode)).slice(0, 20) : [];
+      Number.isFinite(run?.timestamp) && Math.abs(run.timestamp) <= 8.64e15 && ['dark', 'reference', 'sample'].includes(run.mode))
+      .slice(0, 20).map(run => ({ ...run, count: Number.isInteger(run.count) ? Math.min(25, Math.max(1, run.count)) : 1 })) : [];
     restored.set(id, state);
   }
   workbench.restore(data.workbench);
@@ -1186,6 +1280,31 @@ function exportCsv() {
     for (const chart of memory.charts) for (const series of chart.series) {
       for (let index = 0; index < series.x.length; index += 1) {
         rows.push(['memory_signal', station, 'sample', chart.title, series.name, chart.xLabel, series.x[index], chart.yLabel, series.y[index]]);
+      }
+    }
+  }
+  if (state.mode === 'sample' && state.repeatBatch) {
+    const { statistics, seeds } = state.repeatBatch;
+    appendSettings('repeat_setting', { seeds, displayed: state.repeatDisplay, completed: statistics.count, sd_denominator: 'n-1' });
+    for (const [chartIndex, chart] of statistics.deviationCharts.entries()) {
+      const mean = statistics.charts[chartIndex];
+      const counts = statistics.counts[chartIndex];
+      for (const [seriesIndex, series] of (chart.series ?? []).entries()) {
+        for (let index = 0; index < series.x.length; index++) {
+          for (const [kind, value] of [['repeat_sd', series.y[index]], ['repeat_mean', mean.series[seriesIndex].y[index]],
+            ['repeat_count', counts.series[seriesIndex][index]]]) {
+            rows.push([kind, station, state.mode, chart.title, series.name, chart.xLabel, series.x[index],
+              kind === 'repeat_count' ? 'Finite scans' : kind === 'repeat_mean' ? mean.yLabel : chart.yLabel, value]);
+          }
+        }
+      }
+      if (chart.heatmap) {
+        for (let row = 0; row < chart.heatmap.y.length; row++) for (let col = 0; col < chart.heatmap.x.length; col++) {
+          for (const [kind, value] of [['repeat_map_sd', chart.heatmap.z[row][col]], ['repeat_map_mean', mean.heatmap.z[row][col]],
+            ['repeat_map_count', counts.heatmap[row][col]]]) {
+            rows.push([kind, station, state.mode, chart.title, '', chart.xLabel, chart.heatmap.x[col], chart.yLabel, chart.heatmap.y[row], value]);
+          }
+        }
       }
     }
   }
@@ -1258,6 +1377,7 @@ async function exportInstrumentMatlab() {
     const code = generateMatlabMeasurement(id, currentTrace.traceScene ?? currentTrace.scene, {
       settings: state.settings, seed: state.seed, mode: state.mode, opticalTransfer: currentTrace.opticalTransfer,
       reference: matlabReference(activeReference(state, state.mode)), dark: matlabReference(state.dark),
+      repeats: state.mode === 'sample' && state.repeatBatch ? { seeds: state.repeatBatch.seeds, view: state.repeatDisplay } : null,
     });
     showCode({ title: catalog[id].name + ' · MATLAB',
       description: 'Run this script in MATLAB to retrace the current optics and calculate the instrument measurement.',
@@ -1319,7 +1439,16 @@ const plotAnalysis = createPlotAnalysis({
   reference: state => activeReference(state, 'sample'),
   calculate: (id, settings, layout, seed, reference, dark) => {
     const trace = traceOptics(id, settings, layout, 'sample');
-    return runModel(id, settings, seed, trace, 'sample', reference, dark);
+    const state = stateOf(id);
+    if (!state.repeatBatch || state.repeatDisplay === 'latest') return runModel(id, settings, seed, trace, 'sample', reference, dark);
+    const accumulator = createRepeatAccumulator();
+    let result;
+    for (const repeatSeed of state.repeatBatch.seeds) {
+      result = runModel(id, settings, repeatSeed, trace, 'sample', reference, dark);
+      accumulator.add(result);
+    }
+    const statistics = accumulator.result();
+    return { ...result, charts: state.repeatDisplay === 'sd' ? statistics.deviationCharts : statistics.charts };
   },
 });
 const workbench = createWorkbench({ exportFile: exportUserFile, notify: fileFeedback, showCode });
@@ -1470,6 +1599,16 @@ el('photon-play').addEventListener('click', replayPhotons);
 el('reference').addEventListener('click', () => capture('reference'));
 el('dark').addEventListener('click', () => capture('dark'));
 el('measure').addEventListener('click', () => capture('sample'));
+el('repeat-count').addEventListener('change', event => {
+  const value = event.target.valueAsNumber;
+  stateOf().repeatCount = Number.isFinite(value) ? Math.min(25, Math.max(1, Math.round(value))) : 1;
+  event.target.value = stateOf().repeatCount;
+  refreshStatus();
+});
+el('repeat-display').addEventListener('change', event => {
+  stateOf().repeatDisplay = event.target.value;
+  refreshResult();
+});
 el('stop-scan').addEventListener('click', () => {
   if (!acquisition) return;
   cancelScan();

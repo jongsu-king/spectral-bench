@@ -23,6 +23,7 @@ import webbrowser
 ROOT = Path(__file__).resolve().parent
 FROZEN = getattr(sys, "frozen", False)
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", ROOT))
+APP_VERSION = (RESOURCE_ROOT / "VERSION").read_text(encoding="utf-8").strip()
 ASSETS = RESOURCE_ROOT / ("web" if FROZEN else "dist")
 MATLAB_ASSETS = RESOURCE_ROOT / "matlab"
 LIBRARY_DIRECTORY = RESOURCE_ROOT / "native" if FROZEN else ROOT / ".build" / "native"
@@ -389,7 +390,7 @@ def main() -> None:
         try:
             dialogs = FileDialogs()
             window = webview.create_window(
-                "Spectral Bench — Instrument Laboratory",
+                f"Spectral Bench {APP_VERSION} — Instrument Laboratory",
                 url=server.origin,
                 js_api=dialogs,
                 width=1420,

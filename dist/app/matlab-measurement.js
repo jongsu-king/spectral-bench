@@ -42,10 +42,15 @@ function acquisitionData(value) {
 }
 
 export function generateMatlabMeasurement(instrumentId, scene, {
-  settings = {}, mode = 'sample', seed = 631, reference = null, dark = null, opticalTransfer = {},
+  settings = {}, mode = 'sample', seed = 631, reference = null, dark = null, opticalTransfer = {}, repeats = null,
 } = {}) {
   if (instrumentId === 'uvvis') instrumentId = 'uv';
   if (!Object.hasOwn(instrumentNames, instrumentId)) throw new Error('Unknown instrument: ' + instrumentId);
+  if (repeats && (mode !== 'sample' || !Array.isArray(repeats.seeds) || !repeats.seeds.length || repeats.seeds.length > 25 ||
+      !repeats.seeds.every(value => Number.isSafeInteger(value) && value >= 0 && value <= 0xffffffff) ||
+      !['mean', 'sd', 'latest'].includes(repeats.view))) {
+    throw new Error('Repeated MATLAB export needs 1–25 sample seeds and a mean, sd or latest view.');
+  }
   const savedScene = {
     name: instrumentNames[instrumentId],
     ...(opticalTransfer.traceScene ?? opticalTransfer.scene ?? scene),
@@ -93,15 +98,154 @@ export function generateMatlabMeasurement(instrumentId, scene, {
     '    reference.seed = measurementSeed;',
     '    reference.scene = savedScene;',
     'end',
-    'measurement = runMeasurement(instrumentId, settings, acquisitionMode, measurementSeed, opticalTransfer, reference, dark);',
+    ...(repeats ? [
+      '% Repeated acquisition. Fitted metrics are averaged per scan.',
+      'repeatSeeds = reshape(' + matlabJson(repeats.seeds).replace(/;\s*$/, '') + ',1,[]);',
+      'repeatView = ' + matlabJson(repeats.view),
+      'repeatMeasurements = cell(1,numel(repeatSeeds));',
+      'for repeatIndex = 1:numel(repeatSeeds)',
+      '    repeatMeasurements{repeatIndex} = runMeasurement(instrumentId, settings, acquisitionMode, repeatSeeds(repeatIndex), opticalTransfer, reference, dark);',
+      'end',
+      'measurementLatest = repeatMeasurements{end};',
+      '[measurementMean, measurementStd, repeatCounts] = summarizeRepeatedMeasurements(repeatMeasurements);',
+      'measurementMean.repeatSeeds = repeatSeeds;',
+      'measurementMean.stdCharts = measurementStd.charts;',
+      'measurementMean.sampleCounts = repeatCounts;',
+      'measurementStd.repeatSeeds = repeatSeeds;',
+      'measurementStd.sampleCounts = repeatCounts;',
+      'switch repeatView',
+      "    case 'sd', measurement = measurementStd;",
+      "    case 'latest', measurement = measurementLatest;",
+      '    otherwise, measurement = measurementMean;',
+      'end',
+    ] : ['measurement = runMeasurement(instrumentId, settings, acquisitionMode, measurementSeed, opticalTransfer, reference, dark);']),
     'disp(detectorSummary);',
     'disp(measurement.metrics);',
     'drawOptics(scene, rayTrace);',
     'plotMeasurement(measurement, ' + "'" + instrumentNames[instrumentId] + "'" + ');',
     matlabRaySolver,
+    ...(repeats ? [matlabRepeatedSolver] : []),
     matlabMeasurementSolver,
   ].join('\n');
 }
+
+const matlabRepeatedSolver = `
+function [average, deviation, counts] = summarizeRepeatedMeasurements(measurements)
+    first = measurements{1};
+    count = numel(measurements);
+    for scan = 2:count
+        current = measurements{scan};
+        assert(numel(current.charts)==numel(first.charts),'Measurement channels changed during repeated acquisition.');
+        for k = 1:numel(first.charts)
+            a = first.charts(k);
+            b = current.charts(k);
+            assert(strcmp(a.title,b.title) && strcmp(a.xLabel,b.xLabel) && strcmp(a.yLabel,b.yLabel) ...
+                && numel(a.series)==numel(b.series) && isempty(a.heatmap)==isempty(b.heatmap), ...
+                'Measurement channels or units changed during repeated acquisition.');
+            for trace = 1:numel(a.series)
+                assert(strcmp(a.series(trace).name,b.series(trace).name) && isequaln(a.series(trace).x,b.series(trace).x), ...
+                    'Measurement trace coordinates changed during repeated acquisition.');
+            end
+            if ~isempty(a.heatmap)
+                assert(isequaln(a.heatmap.x,b.heatmap.x) && isequaln(a.heatmap.y,b.heatmap.y), ...
+                    'Measurement map coordinates changed during repeated acquisition.');
+            end
+        end
+    end
+    average = measurements{end};
+    deviation = average;
+    counts = repmat(struct('series',{{}},'heatmap',[]),size(first.charts));
+    for k = 1:numel(first.charts)
+        average.charts(k).statistic = 'mean';
+        deviation.charts(k).statistic = 'sample-standard-deviation';
+        for trace = 1:numel(first.charts(k).series)
+            x = first.charts(k).series(trace).x;
+            samples = zeros(count,numel(x));
+            for scan = 1:count
+                samples(scan,:) = measurements{scan}.charts(k).series(trace).y;
+            end
+            [meanValue,sd,n] = repeatedSampleMoments(samples,isfinite(x));
+            average.charts(k).series(trace).y = meanValue;
+            deviation.charts(k).series(trace).y = sd;
+            counts(k).series{trace} = n;
+        end
+        if isempty(first.charts(k).heatmap)
+            deviation.charts(k).yLabel = ['SD · ' first.charts(k).yLabel];
+        else
+            heatmap = first.charts(k).heatmap;
+            shape = size(heatmap.z);
+            samples = zeros(count,numel(heatmap.z));
+            for scan = 1:count
+                samples(scan,:) = reshape(measurements{scan}.charts(k).heatmap.z,1,[]);
+            end
+            valid = isfinite(heatmap.y(:))*isfinite(heatmap.x(:))';
+            [meanValue,sd,n] = repeatedSampleMoments(samples,reshape(valid,1,[]));
+            average.charts(k).heatmap.z = reshape(meanValue,shape);
+            deviation.charts(k).heatmap.z = reshape(sd,shape);
+            if isfield(heatmap,'zLabel')
+                deviation.charts(k).heatmap.zLabel = ['SD · ' heatmap.zLabel];
+            elseif strcmp(first.charts(k).title,'Transient absorption map')
+                deviation.charts(k).heatmap.zLabel = 'SD · ΔA (mOD)';
+            else
+                deviation.charts(k).heatmap.zLabel = 'SD · Value';
+            end
+            counts(k).heatmap = reshape(n,shape);
+        end
+    end
+    [average.metrics,deviation.metrics,average.metricCounts] = repeatedMetrics(measurements);
+    average.metricDeviations = deviation.metrics;
+    deviation.metricCounts = average.metricCounts;
+    average.repeatCount = count;
+    deviation.repeatCount = count;
+end
+
+function [average,deviation,counts] = repeatedSampleMoments(samples,axisValid)
+    average = zeros(1,size(samples,2));
+    m2 = average;
+    counts = average;
+    for scan = 1:size(samples,1)
+        valid = isfinite(samples(scan,:)) & axisValid;
+        counts(valid) = counts(valid)+1;
+        delta = samples(scan,valid)-average(valid);
+        average(valid) = average(valid)+delta./counts(valid);
+        m2(valid) = m2(valid)+delta.*(samples(scan,valid)-average(valid));
+    end
+    deviation = sqrt(max(0,m2./(counts-1)));
+    average(counts==0) = NaN;
+    deviation(counts<2) = NaN;
+end
+
+function [average,deviation,counts] = repeatedMetrics(measurements)
+    average = struct();
+    deviation = struct();
+    counts = struct();
+    keys = {};
+    for scan = 1:numel(measurements)
+        keys = union(keys,fieldnames(measurements{scan}.metrics),'stable');
+    end
+    for k = 1:numel(keys)
+        key = keys{k};
+        values = NaN(numel(measurements),1);
+        texts = {};
+        for scan = 1:numel(measurements)
+            metric = setting(measurements{scan}.metrics,key,[]);
+            if isnumeric(metric) && isscalar(metric) && isfinite(metric)
+                values(scan) = metric;
+            elseif ischar(metric)
+                texts{end+1} = metric; %#ok<AGROW>
+            end
+        end
+        [meanValue,sd,n] = repeatedSampleMoments(values,true);
+        if n>0
+            average.(key) = meanValue;
+            deviation.(key) = sd;
+            counts.(key) = n;
+        elseif ~isempty(texts) && all(cellfun(@(text) strcmp(text,texts{1}),texts))
+            average.(key) = texts{end};
+        end
+    end
+end
+`;
 
 const matlabMeasurementSolver = `
 function scene = prepareMeasurementScene(scene)

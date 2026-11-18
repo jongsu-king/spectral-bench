@@ -14,6 +14,10 @@ All nine instrument tabs have their own editable 3D bench. Select **Thin lens** 
 
 Enter a value beside an instrument slider to set it directly. **Stop** cancels an acquisition in progress. The bench toolbar has **Undo** and **Redo** for optic edits (Ctrl/⌘+Z and Ctrl/⌘+Shift+Z). A drag counts as one edit.
 
+Set **Sample repeats** to collect 1–25 scans under the same settings and layout. After a completed batch, choose **Mean**, **Sample SD**, or **Last scan**. Mean curves contain the pointwise average of the processed scans, and model-fit metrics are averaged across their per-scan results. Sample SD uses the finite observation count at each point and the n−1 denominator. Stop cancels the active batch and preserves the previous completed acquisition. Changing a setting or the layout returns to live preview. CSV includes means, standard deviations, finite counts and seeds. Sessions and exported MATLAB scripts reproduce the selected repeat statistic from those seeds. Synthetic models without scan-to-scan noise return zero SD.
+
+Every graph has **Zoom box**, **Autoscale**, and **Axes…** controls. Drag a rectangle in Zoom box mode or use Ctrl/⌘+wheel inside the plot to inspect a region. Axes accepts manual X/Y ranges and optional logarithmic Y for line traces. Nonpositive values are masked on the logarithmic axis. Press Home to autoscale. Plot ranges remain per instrument and are included in sessions.
+
 Open **Alignment sweep** below the ray paths and select an optic, detector, and position or rotation axis. The sweep traces 2–61 offsets from the current pose and reports optical transfer, detector power, detected rays, and RMS spot radius. Select a result and use **Apply offset** to move the optic in one undoable edit. The sweep table can be exported to CSV.
 
 Use **Import CSV** to overlay a measured trace on an instrument plot. Select its X and Y columns and a simulation trace with the same units. CSV, TSV, semicolon-delimited files, and line traces in Spectral Bench CSV exports are supported. RMSE and bias use the overlapping measured samples, with the simulation interpolated at their X values. Each instrument retains one imported trace in the session and includes it in CSV export.
@@ -27,7 +31,7 @@ Use **Trace memory → Store trace** to keep a copy of the displayed sample line
 
 ## Launch
 
-Open `releases/Spectral Bench.app` on Apple Silicon macOS. The app bundles its Python runtime, HTML interface, and C FFT library. It uses the system WebKit view and can run offline.
+Download the Apple Silicon DMG and MATLAB examples from [GitHub Releases](https://github.com/jongsu-king/spectral-bench/releases/latest). Open the DMG and drag Spectral Bench into Applications. The app bundles its Python runtime, HTML interface, and C FFT library. It uses the system WebKit view and can run offline. The macOS package is ad hoc signed; Apple notarization is pending.
 
 ### MATLAB
 
@@ -46,6 +50,8 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-desktop.txt
 .venv/bin/python tools/build_desktop.py
 ```
+
+To create the verified macOS DMG, MATLAB example ZIP and SHA-256 checksums after building, run `.venv/bin/python tools/package_release.py`. The package version is read from `VERSION`.
 
 For a Windows build, run the same build script in an x64 Visual Studio Developer Command Prompt with Python 3.12, the C/C++ build tools, and the Microsoft Edge WebView2 Runtime available:
 

@@ -199,7 +199,7 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
       if (context.state.nativeSurface?.chart !== context.baseChart) {
         const { heatmap, xLabel, yLabel, title } = context.baseChart;
         context.state.nativeSurface = { chart: context.baseChart,
-          data: { ...heatmap, xLabel, yLabel, zLabel: 'ΔA (mOD)', title } };
+          data: { ...heatmap, xLabel, yLabel, zLabel: heatmap.zLabel ?? 'ΔA (mOD)', title } };
       }
       return context.state.nativeSurface;
     }

@@ -8,6 +8,7 @@
   <title>Spectral Bench — Instrument Laboratory</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./workbench.css">
+  <link rel="stylesheet" href="./plot-navigation.css">
   <script src="./app/runtime.js"></script>
   <script type="module" src="./app/main.js"></script>
 </head>
@@ -119,6 +120,7 @@
         </div>
         <div class="acquisition instrument-status-bar">
           <div class="acquisition-status" id="acquisition-status" role="status"></div>
+          <label class="repeat-control" for="repeat-count">Sample repeats <input type="number" id="repeat-count" min="1" max="25" step="1" value="1"></label>
           <div id="capture-buttons" class="capture-buttons">
             <button type="button" class="button" id="dark" hidden><span data-icon="moon"></span>Dark</button>
             <button type="button" class="button" id="reference"><span data-icon="target"></span><span id="reference-label">Acquire reference</span></button>
@@ -267,6 +269,11 @@
             <label class="trace-memory-toggle"><input type="checkbox" id="trace-overlay" checked disabled>Overlay</label>
             <button class="button subtle-button" type="button" id="trace-clear" disabled>Clear</button>
           </div>
+        </div>
+        <div class="repeat-summary" id="repeat-summary" hidden>
+          <label for="repeat-display">Repeated scans</label>
+          <select id="repeat-display"><option value="mean">Mean</option><option value="sd">Sample SD</option><option value="latest">Last scan</option></select>
+          <output id="repeat-status" aria-live="polite"></output>
         </div>
         <input type="file" id="measurement-file" accept=".csv,.tsv,.txt,text/csv,text/tab-separated-values,text/plain" hidden>
         <div id="measured-trace" class="measured-trace" aria-label="Measured data" hidden>
