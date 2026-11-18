@@ -564,3 +564,16 @@ dialog p { color: var(--muted); font-size: 11px; }
 .instrument-ray-table tr.is-selected td { background: var(--selection); }
 .ray-segment.button { min-height: 21px; min-width: 29px; padding: 1px 4px; font-family: var(--mono); }
 .ray-segment[aria-pressed=true] { background: var(--selection); border-color: var(--selection-border); }
+
+@media (min-width: 761px) and (max-height: 700px) {
+  #instrument-workspace[data-view=optics] .instrument-toolbar { min-height: 30px; padding-block: 2px; }
+  #instrument-workspace[data-view=optics] .instrument-views .button { min-height: 24px; }
+  #instrument-workspace[data-view=optics] .bench-caption { min-height: 28px; padding-block: 2px; }
+  #instrument-workspace[data-view=optics] .bench-caption :is(strong, p) { line-height: 1.2; }
+  #instrument-workspace[data-view=optics] .metric { padding-block: 2px; }
+  #instrument-workspace[data-view=optics] .plot-head { min-height: 21px; padding-block: 1px; }
+  #instrument-workspace[data-view=optics] .plot-navigation { min-height: 23px; padding-block: 1px; }
+  #instrument-workspace[data-view=optics] .results > .plot-tools { row-gap: 2px; padding-block: 2px; }
+  #instrument-workspace[data-view=optics] .plot-tools .button { min-height: 22px; }
+  #instrument-workspace[data-view=optics] .instrument-ray-inspector > summary { padding-block: 2px; }
+}

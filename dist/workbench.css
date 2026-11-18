@@ -188,3 +188,10 @@
   .alignment-sweep-result-grid { grid-template-columns: minmax(0, 1fr); }
   .alignment-sweep-table { border-left: 0; border-top: 1px solid var(--line); }
 }
+
+@media (min-width: 761px) and (max-height: 700px) {
+  .instrument-edit-row { --optical-view-height: clamp(160px, calc(100vh - 490px), 210px); }
+  .instrument-paths { padding-block: 2px; }
+  .alignment-sweep > summary { padding-block: 2px; }
+  #instrument-alignment-map > .alignment-map { padding-block: 2px; }
+}
