@@ -641,7 +641,7 @@ export function createWorkbench({ exportFile, notify, showCode }) {
     sweepPlot = renderCharts(output, [
       { title: 'Power vs. distance', xLabel: 'Detector offset (mm)', yLabel: 'Power (mW)', series: [{ name: 'Power', x, y: rows.map(entry => entry.power), color: '#236f78' }] },
       { title: 'RMS radius vs. distance', xLabel: 'Detector offset (mm)', yLabel: 'RMS radius (mm)', series: [{ name: 'Spot size', x, y: rows.map(entry => entry.rms), color: '#a15d1c' }] },
-    ], () => {});
+    ], () => {}, { exportFile, notify });
     el('wb-sweep-rows').replaceChildren(...rows.map(entry => row([fmt(entry.offset, 2), fmt(entry.power, 5), entry.count,
       fmt(entry.rms, 3), entry.position.map(value => fmt(value, 2)).join(' / ')])));
     el('wb-sweep-table').hidden = false;

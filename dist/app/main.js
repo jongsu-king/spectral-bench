@@ -7,7 +7,9 @@ import { createWorkbench } from './workbench3d.js';
 import { createViewport3D } from './viewport3d.js';
 import { createRayInspector } from './ray-inspector.js';
 import { createRepeatAccumulator } from './repeat-acquisition.js';
+import { nextAcquisitionSeed, validSeed, restoredRepeatSeeds } from './acquisition-seeds.js';
 import { createAlignmentSweep } from './alignment-sweep.js';
+import { createAlignmentMap } from './alignment-map.js';
 import { addMeasuredOverlay, createMeasurementImport, measuredComparison, restoreMeasuredTrace } from './measurement-import.js';
 import { createInstrumentScene, traceInstrumentOptics } from './instrument-optics.js';
 import { changePose, changeProperty, editedScene, emptyEdits, hasEdits, newOptic, partNames, partProperties, removePart, restoreEdits } from './instrument-layout.js';
@@ -15,6 +17,10 @@ import { overlayLineCharts, snapshotLineCharts } from './trace-memory.js';
 import { renderPlotTable } from './plot-table.js';
 import { createPlotAnalysis } from './plot-analysis.js';
 import { samplePresets } from './sample-presets.js';
+import { createSessionRecovery } from './session-recovery.js';
+import { createTraceAnalysis } from './trace-analysis.js';
+import { restoreAnalysisSettings, serializeAnalysisSettings, restorePlotCursors } from './session-analysis.js';
+import { parseSessionDocument } from './session-format.js';
 
 const models = { ...opticalModels, ...advancedModels };
 const catalog = {
@@ -147,6 +153,7 @@ let fftEngine = 'c';
 let matlabRelease = '';
 let matlabStarting = false;
 let matlabPlot;
+let recovery;
 
 function makeState(id) {
   const settings = Object.fromEntries([...models[id].controls, alignmentControl].map(item => [item.key, item.value]));
@@ -336,6 +343,23 @@ function alignmentPose(snapshot, { partId, axis, coordinate, offset }) {
   return vector;
 }
 
+function alignmentMapLayout(snapshot, poses) {
+  const layout = structuredClone(snapshot.layout);
+  const vectors = new Map();
+  for (const { partId, axis, coordinate, offset } of poses) {
+    const part = snapshot.trace.scene.parts.find(candidate => candidate.id === partId);
+    if (!part || !['position', 'rotation'].includes(axis) || ![0, 1, 2].includes(coordinate) || !Number.isFinite(offset)) {
+      throw new Error('The alignment map pose is invalid.');
+    }
+    const key = JSON.stringify([partId, axis]);
+    const vector = vectors.get(key)?.vector ?? [...part[axis]];
+    vector[coordinate] += offset;
+    vectors.set(key, { partId, axis, vector });
+  }
+  for (const { partId, axis, vector } of vectors.values()) changePose(layout, snapshot.nominal, partId, axis, vector);
+  return layout;
+}
+
 const pathLabels = {
   signal: 'Signal', excitation: 'Excitation', moving: 'Moving arm', fixed: 'Fixed arm',
   pump: 'Pump', probe: 'Probe', generation: 'Continuum input', gate: 'Gate',
@@ -384,6 +408,7 @@ function refreshBench() {
     highlightRay: raySelection?.index ?? closest ?? null, highlightSegment: raySelection?.segment ?? null });
   rayInspector.update(dark ? null : currentTrace, raySelection);
   alignmentSweep.update({ station, trace: currentTrace, partId: selectedPart?.id, mode: stateOf().mode });
+  alignmentMap.update({ station, trace: currentTrace, partId: selectedPart?.id, mode: stateOf().mode });
   renderOpticInspector(parts);
   el('part-label').textContent = selectedPart?.name ?? 'Instrument optics';
   el('part-description').textContent = instrumentToolHints[instrumentTool];
@@ -586,7 +611,7 @@ async function runMatlabModel() {
     el('matlab-summary').textContent = chart.summary;
     el('matlab-dialog').showModal();
     matlabPlot?.disconnect();
-    matlabPlot = renderCharts(el('matlab-plots'), [chart], () => {});
+    matlabPlot = renderCharts(el('matlab-plots'), [chart], () => {}, { exportFile: exportUserFile, notify: fileFeedback });
   } catch (error) {
     updateEngineControls(error.message);
   } finally {
@@ -671,14 +696,15 @@ const primaryPlots = { array: 1, uv: 1, pl: 1, raman: 1, ftir: 1, ta: 2 };
 
 function renderDetectorPlots() {
   const state = stateOf();
+  if (state.display !== 'fit') plotAnalysis.stopFit('', false);
   const liveCharts = currentResult?.charts ?? [];
   const stored = state.memory && state.overlay ? overlayLineCharts(liveCharts, state.memory.charts) : { charts: liveCharts, count: 0 };
   const comparison = measuredComparison(liveCharts, state.measurement);
   const chartsWithOverlays = comparison && state.measuredOverlay
     ? addMeasuredOverlay(stored.charts, state.measurement, comparison.chartIndex) : stored.charts;
   const { display } = state;
-  const allowed = chartsWithOverlays.flatMap((chart, index) => display === 'fit' && (chart.heatmap || !chart.series?.length) ? [] : [index]);
-  const preferred = state.mode === 'sample' ? station === 'ta' && display === 'fit' ? 1 : primaryPlots[station] ?? 0 : 0;
+  const allowed = chartsWithOverlays.flatMap((chart, index) => ['fit', 'stats'].includes(display) && (chart.heatmap || !chart.series?.length) ? [] : [index]);
+  const preferred = state.mode === 'sample' ? station === 'ta' && ['fit', 'stats'].includes(display) ? 1 : primaryPlots[station] ?? 0 : 0;
   const fallback = allowed.includes(preferred) ? preferred : allowed[0];
   const selection = state.plot === '*' && display === 'graph' ? '*' : allowed.includes(state.plot) ? state.plot : fallback;
   const plotSelect = el('plot-selection');
@@ -698,23 +724,25 @@ function renderDetectorPlots() {
   }
   visiblePlots?.disconnect();
   visiblePlots = null;
-  const graph = display === 'graph' || display === 'fit';
+  const graph = ['graph', 'fit', 'stats'].includes(display);
   el('plots').hidden = !graph;
   el('plot-table').hidden = display !== 'table';
   el('fit-panel').hidden = display !== 'fit';
+  el('trace-analysis').hidden = display !== 'stats';
   el('map-panel').hidden = display !== 'map';
   const context = { id: station, state, chart: chartsWithOverlays[selection], baseChart: liveCharts[selection],
     chartIndex: selection, result: currentResult, controls: [...models[station].controls, alignmentControl] };
   if (display === 'table') renderPlotTable(el('plot-table'), chartsWithOverlays, selection);
   else if (display === 'map') plotAnalysis.renderMap(context);
   else if (graph) {
-    const charts = display === 'fit' ? plotAnalysis.renderFit(context)
+    const charts = display === 'fit' ? plotAnalysis.renderFit(context) : display === 'stats' ? traceAnalysis.render(context)
       : selection === '*' ? chartsWithOverlays : selection !== undefined ? [chartsWithOverlays[selection]] : [];
     visiblePlots = renderCharts(el('plots'), charts, selected => {
       probe = selected;
       refreshBench();
       if (state.display === 'fit') plotAnalysis.syncFitCursors();
-    }, { cursors: state.cursors, views: state.views });
+      if (state.display === 'stats') traceAnalysis.syncCursors();
+    }, { cursors: state.cursors, views: state.views, exportFile: exportUserFile, notify: fileFeedback });
   }
   updateTraceMemoryControls(state, stored.count);
   measurementImport.update(state.measurement, state.measuredOverlay, comparison);
@@ -850,7 +878,9 @@ function geometryEdited() {
   stopPlayback();
   cancelScan();
   plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   alignmentSweep.cancel();
+  alignmentMap.cancel();
   const state = stateOf();
   state.mode = 'sample';
   state.acquired = false;
@@ -976,7 +1006,9 @@ function openStation(id, updateUrl = true) {
   finishLayoutGesture();
   stopPlayback();
   plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   alignmentSweep.update(null);
+  alignmentMap.update(null);
   cancelAnimationFrame(renderPending);
   renderPending = 0;
   cancelScan();
@@ -1010,7 +1042,9 @@ function openWorkbench(updateUrl = true) {
   finishLayoutGesture();
   stopPlayback();
   plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   alignmentSweep.update(null);
+  alignmentMap.update(null);
   cancelAnimationFrame(renderPending);
   renderPending = 0;
   cancelScan();
@@ -1028,7 +1062,9 @@ function capture(mode) {
   if (acquisition) return;
   flushResult();
   alignmentSweep.cancel();
+  alignmentMap.cancel();
   plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   stopPlayback();
   const state = stateOf();
   state.stopped = false;
@@ -1048,7 +1084,7 @@ function capture(mode) {
       return;
     }
     try {
-      const seed = state.seed + record.completed + 1;
+      const seed = nextAcquisitionSeed(state.seed, record.completed + 1);
       const result = runModel(station, state.settings, seed, record.trace, mode, activeReference(state, mode), state.dark);
       record.seeds.push(seed);
       if (record.total > 1) record.accumulator.add(result);
@@ -1106,6 +1142,7 @@ function sessionJson() {
     measurement: state.measurement, measuredOverlay: state.measuredOverlay,
     repeatCount: state.repeatCount, repeatDisplay: state.repeatDisplay, repeatSeeds: state.repeatBatch?.seeds,
     plotViews: [...state.views],
+    plotCursors: [...state.cursors], analysis: serializeAnalysisSettings(state),
   }]));
   return JSON.stringify({ format: 'spectral-bench', version: 1,
     instrument: workbenchActive ? 'workbench' : station, instruments, workbench: workbench.serialize() });
@@ -1130,16 +1167,6 @@ function validateSettings(id, saved) {
   return settings;
 }
 
-function validSeed(value) {
-  return Number.isSafeInteger(value) && value >= 0 && value < 1e9 ? value : 631;
-}
-
-function restoredRepeatSeeds(value, finalSeed) {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 25 || value.at(-1) !== finalSeed) return null;
-  return value.every((seed, index) => Number.isSafeInteger(seed) && seed >= 0 && seed < 1e9 &&
-    (index === 0 || seed === value[index - 1] + 1)) ? value : null;
-}
-
 function restorePlotViews(saved) {
   const views = new Map();
   if (!Array.isArray(saved)) return views;
@@ -1156,11 +1183,7 @@ function restorePlotViews(saved) {
 }
 
 function restoreSession(content) {
-  const data = JSON.parse(content);
-  if (data?.format !== 'spectral-bench' || data.version !== 1 || !data.instruments ||
-    (data.instrument !== 'workbench' && !Object.hasOwn(catalog, data.instrument))) {
-    throw new Error('This is not a supported Spectral Bench session.');
-  }
+  const data = parseSessionDocument(content, Object.keys(catalog));
   const restored = new Map();
   for (const id of Object.keys(catalog)) {
     const saved = data.instruments[id];
@@ -1184,6 +1207,8 @@ function restoreSession(content) {
     state.repeatCount = Number.isInteger(saved.repeatCount) ? Math.min(25, Math.max(1, saved.repeatCount)) : 1;
     state.repeatDisplay = ['latest', 'sd'].includes(saved.repeatDisplay) ? saved.repeatDisplay : 'mean';
     state.views = restorePlotViews(saved.plotViews);
+    state.cursors = restorePlotCursors(saved.plotCursors);
+    Object.assign(state, restoreAnalysisSettings(saved.analysis, [...models[id].controls, alignmentControl]));
     const seeds = state.acquired && restoredRepeatSeeds(saved.repeatSeeds, state.seed);
     if (seeds) {
       const accumulator = createRepeatAccumulator();
@@ -1213,7 +1238,7 @@ function restoreSession(content) {
     state.measurement = restoreMeasuredTrace(saved.measurement);
     state.measuredOverlay = saved.measuredOverlay !== false;
     state.view = saved.view === 'acquire' ? 'acquire' : 'optics';
-    state.display = ['table', 'fit', 'map'].includes(saved.display) ? saved.display : 'graph';
+    state.display = ['table', 'fit', 'stats', 'map'].includes(saved.display) ? saved.display : 'graph';
     state.plot = saved.plot === '*' || (Number.isInteger(saved.plot) && saved.plot >= 0 && saved.plot <= 20) ? saved.plot : null;
     state.runs = Array.isArray(saved.runs) ? saved.runs.filter(run =>
       Number.isFinite(run?.timestamp) && Math.abs(run.timestamp) <= 8.64e15 && ['dark', 'reference', 'sample'].includes(run.mode))
@@ -1323,26 +1348,39 @@ function exportCsv() {
   if (fit) {
     const { result } = fit;
     appendSettings('fit', { model: result.model, source: fit.name, rmse: result.rmse, r2: result.r2,
-      count: result.count, converged: result.converged, ...Object.fromEntries(result.parameters.map(param => [param.name, param.value])) });
+      count: result.count, converged: result.converged, degreesOfFreedom: result.degreesOfFreedom,
+      residualStandardDeviation: result.residualStandardDeviation, uncertaintyMethod: result.uncertainty?.method,
+      uncertaintyAvailable: result.uncertainty?.available, uncertaintyReason: result.uncertainty?.reason,
+      ...Object.fromEntries(result.parameters.map(param => [param.name, param.value])) });
+    appendSettings('fit_standard_error', Object.fromEntries(result.parameters.filter(param => Number.isFinite(param.standardError))
+      .map(param => [param.name, param.standardError])));
+    result.covariance?.forEach((row, first) => row?.forEach((value, second) => {
+      if (Number.isFinite(value)) appendSettings('fit_covariance', { [result.parameters[first].name + ' / ' + result.parameters[second].name]: value });
+    }));
     for (const [kind, series] of [['fit_signal', result.curve], ['fit_residual', result.residual]]) {
       for (let index = 0; index < series.x.length; index += 1) {
         rows.push([kind, station, state.mode, fit.title, fit.name, fit.xLabel, series.x[index], fit.yLabel, series.y[index]]);
       }
     }
   }
+  rows.push(...traceAnalysis.csvRows(currentResult, state));
   const csv = '\uFEFF' + rows.map(row => Array.from({ length: 12 }, (_, index) => csvCell(row[index])).join(',')).join('\r\n');
   const filename = 'spectral-bench-' + station + '-' + (state.acquired ? 'measurement' : state.mode) + '.csv';
   exportUserFile(filename, csv);
 }
 
-function exportUserFile(filename, content) {
+function exportUserFile(filename, content, metadata = {}) {
   const isMatlab = filename.endsWith('.m');
+  const figure = /\.(svg|png)$/i.test(filename);
+  const isSession = filename.endsWith('.sblab');
   if (window.pywebview?.api) {
-    desktopFile(api => isMatlab ? api.save_matlab(filename, content) : api.save_csv(filename, content),
+    return desktopFile(api => figure ? api.save_figure(filename, content, metadata.encoding ?? 'utf8')
+      : isSession ? api.save_session(content) : isMatlab ? api.save_matlab(filename, content) : api.save_csv(filename, content),
       reply => fileFeedback('Saved ' + reply.name));
-    return;
   }
-  const href = URL.createObjectURL(new Blob([content], { type: isMatlab ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' }));
+  const data = metadata.encoding === 'base64' ? Uint8Array.from(atob(content), char => char.charCodeAt(0)) : content;
+  const type = metadata.mimeType ?? (isSession ? 'application/json' : isMatlab ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8');
+  const href = URL.createObjectURL(new Blob([data], { type }));
   const link = htmlElement('a');
   link.href = href;
   link.download = filename;
@@ -1409,6 +1447,20 @@ const alignmentSweep = createAlignmentSweep({
   exportFile: exportUserFile,
 });
 
+const alignmentMap = createAlignmentMap({ host: el('instrument-alignment-map'), snapshot: snapshotAlignment,
+  trace(snapshot, poses) {
+    return traceOptics(snapshot.station, snapshot.settings, alignmentMapLayout(snapshot, poses), snapshot.mode, snapshot.nominal);
+  },
+  apply(snapshot, poses) {
+    if (workbenchActive || station !== snapshot.station || currentTrace !== snapshot.trace || renderPending || acquisition) return false;
+    const layout = alignmentMapLayout(snapshot, poses);
+    selectPart(poses[0].partId);
+    editLayout(state => { state.layout = layout; });
+    return true;
+  },
+  exportFile: exportUserFile, notify: fileFeedback,
+});
+
 const measurementImport = createMeasurementImport({
   context() {
     if (workbenchActive) return null;
@@ -1427,6 +1479,7 @@ const measurementImport = createMeasurementImport({
     state.display = 'graph';
     state.plot = plotIndex;
     plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
     renderDetectorPlots();
   },
   toggle(show) { stateOf().measuredOverlay = show; renderDetectorPlots(); },
@@ -1451,6 +1504,7 @@ const plotAnalysis = createPlotAnalysis({
     return { ...result, charts: state.repeatDisplay === 'sd' ? statistics.deviationCharts : statistics.charts };
   },
 });
+const traceAnalysis = createTraceAnalysis({ repaint: renderDetectorPlots, exportFile: exportUserFile });
 const workbench = createWorkbench({ exportFile: exportUserFile, notify: fileFeedback, showCode });
 for (const node of document.querySelectorAll('[data-icon]')) node.innerHTML = icon(node.dataset.icon);
 const workbenchTab = htmlElement('button', 'instrument-tab');
@@ -1583,15 +1637,17 @@ for (const button of document.querySelectorAll('[data-instrument-view]')) button
   displayInstrumentView();
   updateLocation();
   if (state.view === 'optics') refreshBench();
-  else alignmentSweep.cancel();
+  else { alignmentSweep.cancel(); alignmentMap.cancel(); }
 });
 for (const button of document.querySelectorAll('[data-plot-display]')) button.addEventListener('click', () => {
   if (button.dataset.plotDisplay !== 'map') plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   stateOf().display = button.dataset.plotDisplay;
   if (renderPending) flushResult(); else renderDetectorPlots();
 });
 el('plot-selection').addEventListener('change', event => {
   plotAnalysis.stopMap();
+  plotAnalysis.stopFit('', false);
   stateOf().plot = event.target.value === '*' ? '*' : Number(event.target.value);
   if (renderPending) flushResult(); else renderDetectorPlots();
 });
@@ -1618,22 +1674,65 @@ el('stop-scan').addEventListener('click', () => {
 el('export').addEventListener('click', exportCsv);
 el('fft-engine').addEventListener('change', changeEngine);
 el('matlab-run').addEventListener('click', runMatlabModel);
-el('save-session').addEventListener('click', () =>
-  desktopFile(api => api.save_session(sessionJson()), reply => fileFeedback('Saved ' + reply.name)));
-el('open-session').addEventListener('click', () => desktopFile(api => api.open_session(), reply => {
-  restoreSession(reply.content);
-  fileFeedback('Opened ' + reply.name);
-}));
+el('save-session').addEventListener('click', () => exportUserFile('Spectral Bench session.sblab', sessionJson()));
+el('open-session').addEventListener('click', () => {
+  if (window.pywebview?.api) desktopFile(api => api.open_session(), reply => {
+    restoreSession(reply.content);
+    fileFeedback('Opened ' + reply.name);
+  });
+  else el('session-file').click();
+});
+el('session-file').addEventListener('change', async event => {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    if (file.size > 12_000_000) throw new Error('The session file exceeds 12 MB.');
+    restoreSession(await file.text());
+    fileFeedback('Opened ' + file.name);
+  } catch (error) { fileFeedback(error.message || 'Could not open the session.'); }
+});
 for (const id of ['source-link', 'sample-source']) el(id).addEventListener('click', event => {
   if (!window.pywebview?.api) return;
   event.preventDefault();
   window.pywebview.api.open_source(el(id).href);
 });
 function enableNativeDialogs() {
-  if (!window.pywebview?.api) return;
   el('open-session').hidden = false;
   el('save-session').hidden = false;
+  if (!window.__SPECTRAL_DESKTOP__ || window.pywebview?.api) startRecovery();
 }
+
+function startRecovery() {
+  if (recovery) return;
+  const api = window.pywebview?.api;
+  const key = 'spectral-bench-recovery-v1';
+  const storage = api ? { load: () => api.load_recovery(), save: content => api.save_recovery(content), clear: () => api.clear_recovery() }
+    : { load: () => ({ content: localStorage.getItem(key) }),
+      save: content => { localStorage.setItem(key, content); return { saved: true }; },
+      clear: () => { localStorage.removeItem(key); return { cleared: true }; } };
+  recovery = createSessionRecovery({ storage, serialize: sessionJson, restore: restoreSession,
+    canSave: () => !acquisition && !renderPending && !stateOf().gesture && !document.querySelector('dialog[open]'),
+    onState({ initialized, pending, restorable, busy, savedAt, error }) {
+      el('recovery-banner').hidden = !pending;
+      el('recovery-message').textContent = error || (savedAt ? 'Previous session available · ' + new Date(savedAt).toLocaleString('en-US', { hour12: false }) : 'Previous session available');
+      el('recovery-restore').disabled = !restorable || busy;
+      el('recovery-discard').disabled = busy;
+      el('recovery-status').textContent = error ? 'Recovery copy unavailable' : savedAt && !pending
+        ? 'Recovery saved ' + new Date(savedAt).toLocaleTimeString('en-US', { hour12: false }) : initialized && !pending ? 'Recovery ready' : '';
+      el('recovery-status').title = error || 'Automatic recovery copy. Use Save as… to keep a named experiment.';
+    },
+  });
+  recovery.start();
+  setInterval(() => recovery.flush(), 5000);
+  for (const event of ['change', 'input', 'pointerup', 'keyup', 'click']) document.addEventListener(event, () => recovery.schedule());
+  document.addEventListener('visibilitychange', () => { if (document.hidden) recovery.flush(); });
+  window.addEventListener('pagehide', () => recovery.flush());
+}
+el('recovery-restore').addEventListener('click', async () => {
+  if (await recovery?.restorePending()) fileFeedback('Restored the previous session.');
+});
+el('recovery-discard').addEventListener('click', () => recovery?.discard());
 window.addEventListener('pywebviewready', enableNativeDialogs);
 enableNativeDialogs();
 if (workbenchActive) openWorkbench(false);

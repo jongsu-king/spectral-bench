@@ -230,6 +230,145 @@ function decayFit(solve, samples, model) {
   return { ...result, warning, parameters };
 }
 
+function norm(values) {
+  let scale = 0;
+  let sum = 1;
+  for (const value of values) {
+    const absolute = Math.abs(value);
+    if (!absolute) continue;
+    if (absolute > scale) {
+      sum = 1 + sum * squared(scale / absolute);
+      scale = absolute;
+    } else {
+      sum += squared(absolute / scale);
+    }
+  }
+  return scale * Math.sqrt(sum);
+}
+
+const dot = (first, second) => first.reduce((sum, value, index) => sum + value * second[index], 0);
+
+// Factor the column-scaled Jacobian, with pivoting and a second orthogonalization
+// pass. Keeping R rather than JᵀJ avoids squaring the conditioning of the solve.
+function factorJacobian(rows) {
+  const count = rows[0].length;
+  const columns = Array.from({ length: count }, (_, column) => rows.map(row => row[column]));
+  const scales = columns.map(norm);
+  if (scales.some(value => !(value > 0) || !Number.isFinite(value))) return null;
+  columns.forEach((column, index) => column.forEach((value, row) => { column[row] = value / scales[index]; }));
+  const order = Array.from({ length: count }, (_, index) => index);
+  const upper = Array.from({ length: count }, () => Array(count).fill(0));
+  for (let pivot = 0; pivot < count; pivot += 1) {
+    let best = pivot;
+    for (let index = pivot + 1; index < count; index += 1) {
+      if (norm(columns[index]) > norm(columns[best])) best = index;
+    }
+    [columns[pivot], columns[best]] = [columns[best], columns[pivot]];
+    [order[pivot], order[best]] = [order[best], order[pivot]];
+    for (let row = 0; row < pivot; row += 1) {
+      [upper[row][pivot], upper[row][best]] = [upper[row][best], upper[row][pivot]];
+    }
+    const length = norm(columns[pivot]);
+    if (!(length > 1e-12)) return null;
+    upper[pivot][pivot] = length;
+    const q = columns[pivot].map(value => value / length);
+    for (let column = pivot + 1; column < count; column += 1) {
+      const projection = dot(q, columns[column]);
+      columns[column].forEach((value, row) => { columns[column][row] = value - projection * q[row]; });
+      const correction = dot(q, columns[column]);
+      columns[column].forEach((value, row) => { columns[column][row] = value - correction * q[row]; });
+      upper[pivot][column] = projection + correction;
+    }
+  }
+  const inverse = Array.from({ length: count }, () => Array(count).fill(0));
+  for (let column = 0; column < count; column += 1) {
+    for (let row = count - 1; row >= 0; row -= 1) {
+      let value = row === column ? 1 : 0;
+      for (let next = row + 1; next < count; next += 1) value -= upper[row][next] * inverse[next][column];
+      inverse[row][column] = value / upper[row][row];
+    }
+  }
+  const infinityNorm = matrix => Math.max(...matrix.map(row => row.reduce((sum, value) => sum + Math.abs(value), 0)));
+  const condition = infinityNorm(upper) * infinityNorm(inverse);
+  if (!Number.isFinite(condition) || condition > 1e8) return null;
+  return { inverse, scales, order, condition };
+}
+
+function fitJacobian(data, result, model) {
+  const { xScale, xOrigin, yScale } = data;
+  const { amplitude, extraAmplitude, shape, extra } = result.fit;
+  let rows, transform;
+  if (model === 'linear') {
+    rows = data.x.map(value => [value, 1]);
+    transform = [[yScale / xScale, 0], [-yScale * (xOrigin / xScale), yScale]];
+  } else if (model === 'gaussian' || model === 'lorentzian') {
+    const factor = model === 'gaussian' ? Math.sqrt(8 * Math.log(2)) : 2;
+    const width = result.parameters[1].value / xScale / factor;
+    const center = result.point[0];
+    rows = data.x.map(value => {
+      const difference = value - center;
+      const profile = shape(value);
+      const common = model === 'gaussian' ? amplitude * profile : 2 * amplitude * profile * profile;
+      return [common * difference / squared(width), common * squared(difference) / width ** 3, profile, 1];
+    });
+    transform = [xScale, factor * xScale, yScale, yScale].map((scale, index, values) =>
+      values.map((_, column) => column === index ? scale : 0));
+  } else {
+    const first = result.parameters[0].value / xScale;
+    const multiple = model === 'biexponential';
+    const second = multiple ? result.parameters[1].value / xScale : null;
+    rows = data.x.map(value => multiple
+      ? [amplitude * shape(value) * value / squared(first),
+        extraAmplitude * extra(value) * value / squared(second), shape(value), extra(value), 1]
+      : [amplitude * shape(value) * value / squared(first), shape(value), 1]);
+    const scales = multiple ? [xScale, xScale, yScale, yScale, yScale] : [xScale, yScale, yScale];
+    transform = scales.map((scale, index) => scales.map((_, column) => column === index ? scale : 0));
+    transform.push(null); // Origin is the fixed lower observed X, not a fitted parameter.
+  }
+  return { rows, transform };
+}
+
+function fitUncertainty(data, result, model) {
+  const fixedOrigin = model === 'exponential' || model === 'biexponential';
+  const parameters = result.parameters.map((entry, index, entries) => ({
+    ...entry, standardError: null, fixed: fixedOrigin && index === entries.length - 1,
+  }));
+  const parameterCount = parameters.filter(entry => !entry.fixed).length;
+  const degreesOfFreedom = data.samples.length - parameterCount;
+  const residualScale = degreesOfFreedom > 0 ? Math.sqrt(result.fit.error / degreesOfFreedom) : null;
+  const residualStandardDeviation = residualScale === null ? null : residualScale * data.yScale;
+  const method = 'Local unweighted least squares';
+  const unavailable = reason => ({ parameters, parameterCount, degreesOfFreedom, residualStandardDeviation,
+    covariance: null, uncertainty: { available: false, method, reason } });
+  if (degreesOfFreedom <= 0) return unavailable('More observations than fitted parameters are needed to estimate standard errors.');
+  if (!result.converged || result.warning) return unavailable('Standard errors are unavailable for an unconverged, bounded, or unresolved fit.');
+  const { rows, transform } = fitJacobian(data, result, model);
+  const factor = factorJacobian(rows);
+  if (!factor) return unavailable('The parameter Jacobian is rank deficient or too ill-conditioned to estimate standard errors.');
+
+  // Covariance = RSS/(n−p) · (JᵀJ)⁻¹. Transform the QR factors directly into the
+  // reported parameter units; no physical-unit normal matrix is formed.
+  const basis = transform.map(row => row && factor.inverse.map((_, column) => {
+    let value = 0;
+    for (let index = 0; index < parameterCount; index += 1) {
+      value += row[factor.order[index]] / factor.scales[factor.order[index]] * factor.inverse[index][column];
+    }
+    return value * residualScale;
+  }));
+  if (basis.some(row => row?.some(value => !Number.isFinite(value)))) {
+    return unavailable('The standard-error calculation exceeds the supported numeric range.');
+  }
+  const covariance = basis.map(first => first && basis.map(second => second ? dot(first, second) : null));
+  if (covariance.some(row => row?.some(value => value !== null && !Number.isFinite(value)))) {
+    return unavailable('The covariance calculation exceeds the supported numeric range.');
+  }
+  return {
+    parameters: parameters.map((entry, index) => ({ ...entry, standardError: basis[index] ? norm(basis[index]) : null })),
+    parameterCount, degreesOfFreedom, residualStandardDeviation, covariance,
+    uncertainty: { available: true, method, reason: null, scaledJacobianCondition: factor.condition },
+  };
+}
+
 export function fitTrace(series, { model = 'gaussian', min, max } = {}) {
   if (!Object.hasOwn(fitModels, model)) throw new Error('Select a valid fit model.');
   const data = fitSamples(series, model, min, max);
@@ -259,7 +398,7 @@ export function fitTrace(series, { model = 'gaussian', min, max } = {}) {
     model,
     curve: { x, y: predicted.map(value => data.yOrigin + value * data.yScale) },
     residual: { x: [...x], y: data.y.map((value, index) => (value - predicted[index]) * data.yScale) },
-    parameters: result.parameters,
+    ...fitUncertainty(data, result, model),
     rmse: Math.sqrt(error / count) * data.yScale,
     r2: total > 0 ? 1 - error / total : null,
     count,

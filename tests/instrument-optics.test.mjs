@@ -88,3 +88,39 @@ test('TRPL transit time follows detector displacement and THz depends on the opt
   assert.equal(blocked.geometry.gateCoupling, 0);
   assert.equal(blocked.coupling, 0);
 });
+
+test('FTIR mirror travel contributes twice its displacement with opposite arm signs and common-mode cancellation', () => {
+  for (const displacement of [-0.05, 0.02, 0.1]) {
+    for (const arms of [['moving'], ['fixed'], ['moving', 'fixed']]) {
+      const scene = createInstrumentScene('ftir');
+      for (const id of arms) {
+        const mirror = part(scene, id);
+        const normal = partAxes(mirror).normal;
+        mirror.position = mirror.position.map((value, axis) => value + displacement * normal[axis]);
+      }
+      const result = traceInstrumentOptics('ftir', {}, scene);
+      const expected = arms.length === 2 ? 0 : (arms[0] === 'moving' ? 1 : -1) * 2000 * displacement;
+      // Small finite beam divergence gives a correspondingly small secant correction.
+      assert.ok(Math.abs(result.geometry.ftirOpdOffset - expected) < 0.002,
+        `${arms.join('+')} ${displacement}: ${result.geometry.ftirOpdOffset}`);
+      assert.ok(result.opticalTransfer.paths.fixed.power > 0);
+      assert.ok(result.opticalTransfer.paths.moving.power > 0);
+    }
+  }
+});
+
+test('THz optical delay pair produces the double-pass path length with pump and signal paths unchanged', () => {
+  for (const displacement of [-0.05, 0.02, 0.1]) {
+    const scene = createInstrumentScene('thz');
+    part(scene, 'delay').position[0] += displacement;
+    part(scene, 'retro').position[0] += displacement;
+    const result = traceInstrumentOptics('thz', {}, scene);
+    const { paths, nominalPaths } = result.opticalTransfer;
+    assert.ok(Math.abs(paths.gate.distance - nominalPaths.gate.distance - 2 * displacement) < 0.000002);
+    assert.equal(paths.pump.distance, nominalPaths.pump.distance);
+    assert.equal(paths.signal.distance, nominalPaths.signal.distance);
+    assert.ok(Math.abs(result.geometry.thzStageOffset - 1000 * displacement) < 0.002);
+    const opticalDelay = 2 * result.geometry.thzStageOffset / (0.299792458 * 1000);
+    assert.ok(Math.abs(opticalDelay - 2 * displacement / 0.299792458) < 0.00001);
+  }
+});

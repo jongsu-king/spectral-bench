@@ -11,7 +11,7 @@ test('CSV import preserves escaped labels and duplicate observations in sorted X
     '500,3,0\r\n400,1,4\r\n500,4,1\r\n450,NaN,8\r\n');
   assert.deepEqual(file.columns, ['Wavelength, nm', 'Signal "A"', 'Aux']);
   assert.deepEqual(measurementPairs(file, 0, 1), {
-    xLabel: 'Wavelength, nm', yLabel: 'Signal "A"', x: [400, 500, 500], y: [1, 3, 4], skipped: 1,
+    xLabel: 'Wavelength, nm', yLabel: 'Signal "A"', x: [400, 450, 500, 500], y: [1, null, 3, 4], skipped: 1,
   });
   assert.throws(() => measurementPairs(file, 1, 1), /two different columns/);
 });
@@ -42,14 +42,14 @@ test('native long-form imports signal groups with distinct charts and axis label
   assert.deepEqual(parseMeasurementFile(csv), {
     columns: [], rows: [], traces: [
       { instrument: 'uv', acquisition: 'sample', chartTitle: 'Absorbance', name: 'Sample', xLabel: 'Wavelength (nm)',
-        yLabel: 'Absorbance (AU)', x: [470, 480], y: [0.4, 0.2], skipped: 1 },
+        yLabel: 'Absorbance (AU)', x: [460, 470, 480], y: [null, 0.4, 0.2], skipped: 1 },
       { instrument: 'uv', acquisition: 'sample', chartTitle: 'Transmittance', name: 'Sample', xLabel: 'Wavelength (nm)',
         yLabel: 'Transmittance (%)', x: [470, 480], y: [40, 70], skipped: 0 },
     ],
   });
 });
 
-test('malformed or excessive files and nonfinite restored measurements are rejected', () => {
+test('malformed or excessive files and invalid restored measurements are rejected', () => {
   assert.throws(() => parseMeasurementFile('x,y\n1,2\n3\n4,5'), /Line 3 has 1 columns/);
   assert.throws(() => parseMeasurementFile('x,y\n1,"2\n3,4'), /Unclosed quoted field/);
   assert.throws(() => parseMeasurementFile('é'.repeat(MAX_MEASUREMENT_FILE_BYTES / 2 + 1)), /exceeds 4 MB/);
@@ -70,4 +70,36 @@ test('measurement comparison respects descending coordinates, masks and duplicat
   assert(Math.abs(comparison.bias - 5 / 6) < 1e-12);
   assert.deepEqual(compareMeasurement({ x: [6, 7, 11], y: [1, 2, 3] }, simulated),
     { count: 0, rmse: null, bias: null });
+});
+
+
+test('finite-X missing-Y observations survive import, restore, comparison, and integration', async () => {
+  const parsed = parseMeasurementFile('Wavelength (nm),Signal (AU)\n0,1\n1,1\n2,NaN\n3,1\n4,1');
+  const trace = measurementPairs(parsed, 0, 1);
+  assert.deepEqual(trace.x, [0, 1, 2, 3, 4]);
+  assert.deepEqual(trace.y, [1, 1, null, 1, 1]);
+  const restored = validateMeasurementTrace(JSON.parse(JSON.stringify(trace)));
+  assert.deepEqual(restored, { xLabel: trace.xLabel, yLabel: trace.yLabel, x: trace.x, y: trace.y });
+  const { analyzeTrace } = await import('../dist/app/trace-analysis.js');
+  const analysis = analyzeTrace(restored);
+  assert.equal(analysis.coveredWidth, 2);
+  assert.equal(analysis.integral.net, 2);
+  assert.equal(analysis.coverage, 0.5);
+  assert.deepEqual(compareMeasurement({ x: [0.5, 1.5, 2, 2.5, 3.5], y: [1, 1, 1, 1, 1] }, restored),
+    { count: 2, rmse: 0, bias: 0 });
+  assert.equal(validateMeasurementTrace({ x: [0, 1, 2], y: [0, 'missing', 2] }), null);
+});
+
+test('unknown X creates a persistent run barrier without collapsing duplicate finite observations', async () => {
+  const parsed = parseMeasurementFile('X,Y\n4,1\n3,1\nNaN,7\n1,1\n0,1');
+  const trace = measurementPairs(parsed, 0, 1);
+  assert.deepEqual(trace.x, [0, 1, null, 3, 4]);
+  assert.deepEqual(trace.y, [1, 1, null, 1, 1]);
+  assert.deepEqual(validateMeasurementTrace(trace), { xLabel: 'X', yLabel: 'Y', x: trace.x, y: trace.y });
+  const { analyzeTrace } = await import('../dist/app/trace-analysis.js');
+  assert.equal(analyzeTrace(trace).integral.net, 2);
+  const duplicates = measurementPairs(parseMeasurementFile('X,Y\n1,2\n1,3\n2,4'), 0, 1);
+  assert.deepEqual(duplicates.x, [1, 1, 2]);
+  assert.deepEqual(duplicates.y, [2, 3, 4]);
+  assert.throws(() => analyzeTrace(duplicates), /distinct X/);
 });

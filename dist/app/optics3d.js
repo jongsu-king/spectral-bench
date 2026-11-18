@@ -164,7 +164,7 @@ function gratingDirection(direction, wavelength, hit) {
   const u = dot(direction, surface.u) + order * wavelength * grooveDensity / 1e6;
   const v = dot(direction, surface.v);
   const normalSquared = 1 - u * u - v * v;
-  if (normalSquared <= EPSILON) return null;
+  if (normalSquared <= 0) return null;
   const sign = Math.sign(normalProjection) * (surface.reflective ? -1 : 1);
   return unit(add(add(scale(surface.u, u), scale(surface.v, v)), scale(surface.normal, sign * Math.sqrt(normalSquared))));
 }
@@ -257,7 +257,8 @@ export function traceScene(scene) {
       if (!hit) {
         const finalSegment = Math.min(escapeLength, limit);
         if (finalSegment > EPSILON) points.push(add(origin, scale(direction, finalSegment)));
-        reason = groundDistance <= escapeLength && groundDistance <= maxDistance - distance ? 'table' : 'escaped';
+        reason = groundDistance <= escapeLength && groundDistance <= maxDistance - distance ? 'table'
+          : maxDistance - distance <= escapeLength ? 'limit' : 'escaped';
         distance += finalSegment;
         break;
       }

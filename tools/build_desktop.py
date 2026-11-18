@@ -177,6 +177,19 @@ def build_bundle(library: Path) -> Path:
     ]
     if sys.platform == "darwin":
         arguments.extend(["--osx-bundle-identifier", "local.spectralbench.app"])
+    elif sys.platform == "win32":
+        version_numbers = tuple(int(part) for part in APP_VERSION.split('.'))
+        version_numbers = (version_numbers + (0, 0, 0, 0))[:4]
+        version_file = BUILD / 'windows-version.txt'
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(
+            "VSVersionInfo(ffi=FixedFileInfo(filevers=" + repr(version_numbers) + ", prodvers=" + repr(version_numbers) +
+            ", mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)), kids=["
+            "StringFileInfo([StringTable('040904B0',[StringStruct('FileDescription','Spectral Bench Instrument Laboratory'),"
+            "StringStruct('FileVersion','" + APP_VERSION + "'),StringStruct('ProductName','Spectral Bench'),"
+            "StringStruct('ProductVersion','" + APP_VERSION + "'),StringStruct('OriginalFilename','Spectral Bench.exe')])]),"
+            "VarFileInfo([VarStruct('Translation',[1033,1200])])])", encoding='utf-8')
+        arguments.extend(['--version-file', str(version_file)])
     subprocess.run([*arguments, str(entry)], cwd=ROOT, check=True)
     if sys.platform == "darwin":
         bundle = RELEASES / f"{APP_NAME}.app"

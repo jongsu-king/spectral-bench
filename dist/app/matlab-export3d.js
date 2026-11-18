@@ -76,6 +76,8 @@ function result = traceOptics(scene)
                 ray.reason = 'escaped';
                 if groundDistance <= min(escapeLength,remaining)
                     ray.reason = 'table';
+                elseif remaining <= escapeLength
+                    ray.reason = 'limit';
                 end
                 ray.pathLength = ray.pathLength + span;
                 break
@@ -298,7 +300,7 @@ function [ray,reflected] = opticalInteraction(ray,p,hit)
             u = dot(ray.direction,p.u)+order*ray.wavelength*density/1e6;
             v = dot(ray.direction,p.v);
             normalSquared = 1-u^2-v^2;
-            if normalSquared <= 1e-6
+            if normalSquared <= 0
                 ray.power = 0;
                 ray.reason = 'evanescent';
             else

@@ -1,0 +1,26 @@
+.alignment-map { border-top: 1px solid var(--line); padding: 5px 7px; background: var(--panel); }
+.alignment-map summary { cursor: pointer; font-size: 11px; font-weight: 600; }
+.alignment-map-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 5px 10px; padding: 7px 0 4px; }
+.alignment-map :is(label, output, .alignment-map-hint) { font-size: 10px; }
+.alignment-map label { display: inline-flex; align-items: center; gap: 4px; }
+.alignment-map select { max-width: 220px; min-height: 23px; }
+.alignment-map input[type=number] { width: 67px; min-height: 23px; padding: 2px 4px; font: 10px var(--mono); border: 1px solid var(--border); background: var(--well); color: var(--text); }
+.alignment-map-axis { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+.alignment-map-commands { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.alignment-map-controls > .alignment-map-commands { flex-basis: 100%; }
+.alignment-map .button { min-height: 23px; padding: 2px 6px; font-size: 10px; }
+.alignment-map-status, .alignment-map-selection { display: block; color: var(--muted); padding: 4px 0; overflow-wrap: anywhere; }
+.alignment-map-selection { font-family: var(--mono); }
+.alignment-map-results { padding-top: 5px; }
+.alignment-map-results.is-tracing { opacity: .65; }
+.alignment-map-plot { border: 1px solid var(--line); }
+.alignment-map .alignment-map-plot svg { height: clamp(250px, 38vh, 380px); }
+.alignment-map-surface { border: 1px solid var(--line); background: var(--well); }
+.alignment-map .surface-canvas { height: clamp(280px, 42vh, 440px); }
+.alignment-map-table { max-height: 300px; overflow: auto; border: 1px solid var(--line); background: var(--well); }
+.alignment-map table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.alignment-map th { position: sticky; top: 0; background: var(--panel); text-align: right; font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.alignment-map td { text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--hairline); font-family: var(--mono); }
+.alignment-map tr.is-selected { background: var(--selection); }
+.alignment-map-table tr { cursor: pointer; }
+.alignment-map-hint { margin: 5px 0 0; color: var(--muted); }

@@ -137,7 +137,7 @@ export function createAlignmentSweep({ snapshot, trace, apply, exportFile }) {
     const y = result.rows.map(row => row[field]);
     plot?.disconnect();
     plot = renderCharts(plotHost, [{ title: label, xLabel: result.spec.label + ' offset (' + result.spec.unit + ')',
-      yLabel: unit ? label + ' (' + unit + ')' : label, series: [{ name: label, x, y }] }], undefined, { cursors: new Map() });
+      yLabel: unit ? label + ' (' + unit + ')' : label, series: [{ name: label, x, y }] }], undefined, { cursors: new Map(), exportFile });
     if (selectedRow >= 0) plot.showPoint(0, x[selectedRow]);
   }
 

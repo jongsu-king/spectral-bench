@@ -1,3 +1,5 @@
+import { createFigureAsset, downloadFigure } from './figure-export.js';
+
 const svgNamespace = 'http://www.w3.org/2000/svg';
 const palette = ['#205586', '#9e402c', '#32653b', '#754a8d', '#8e600b', '#006667'];
 const memoryPalette = ['#4b4b4b', '#555f70', '#715743', '#566151', '#6f586e', '#655b3a'];
@@ -157,7 +159,7 @@ function heatmapImage(heatmap, amplitude) {
   return canvas.toDataURL();
 }
 
-function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showHint) {
+function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showHint, exportFile, notify) {
   const heatmap = chart.heatmap?.x?.length && chart.heatmap?.y?.length && chart.heatmap?.z?.length ? chart.heatmap : null;
   const series = (chart.series ?? []).map((entry, index) => {
     const colors = entry.memory ? memoryPalette : palette;
@@ -184,7 +186,9 @@ function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showH
   heading.append(element('h3', '', chart.title));
   const legend = element('div', 'plot-legend');
   heading.append(legend);
+  const figureLegend = [];
   const swatch = (name, color, dash) => {
+    figureLegend.push({ name, color, dash });
     const item = element('span', 'legend-entry');
     const key = element('span', 'legend-key');
     key.style.setProperty('--series', color);
@@ -228,7 +232,35 @@ function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showH
   axesButton.setAttribute('aria-expanded', 'false');
   const navigationStatus = element('output', 'plot-navigation-status');
   navigationStatus.setAttribute('aria-live', 'polite');
-  navigation.append(cursorButton, zoomButton, autoscaleButton, axesButton, navigationStatus);
+  const figureActions = element('span', 'plot-figure-actions');
+  const figureStatus = element('output', 'plot-figure-status');
+  figureStatus.setAttribute('aria-live', 'polite');
+  const figureButtons = ['svg', 'png'].map(format => {
+    const button = element('button', 'button', format.toUpperCase());
+    button.type = 'button';
+    button.classList.add('plot-export-' + format);
+    button.title = 'Save ' + chart.title + ' as ' + format.toUpperCase() + ' with the current axis limits';
+    button.setAttribute('aria-label', 'Save ' + format.toUpperCase() + ' figure · ' + chart.title);
+    button.addEventListener('click', async () => {
+      figureButtons.forEach(entry => { entry.disabled = true; });
+      figureStatus.textContent = 'Preparing ' + format.toUpperCase() + '…';
+      figureStatus.dataset.error = 'false';
+      try {
+        const asset = await createFigureAsset(chartSvg, { title: chart.title, legend: figureLegend, note: chart.note,
+          xLabel: chart.xLabel, yLabel: chart.yLabel, zLabel: heatmap?.zLabel ?? (heatmap ? 'ΔA (mOD)' : '') }, format);
+        if (exportFile) await exportFile(asset.filename, asset.content, { mimeType: asset.mimeType, encoding: asset.encoding });
+        else downloadFigure(asset);
+        figureStatus.textContent = '';
+      } catch (error) {
+        figureStatus.textContent = error.message || 'The figure could not be exported.';
+        figureStatus.dataset.error = 'true';
+        notify?.(figureStatus.textContent);
+      } finally { figureButtons.forEach(entry => { entry.disabled = false; }); }
+    });
+    return button;
+  });
+  figureActions.append(...figureButtons);
+  navigation.append(cursorButton, zoomButton, autoscaleButton, axesButton, navigationStatus, figureActions, figureStatus);
   const axisForm = element('form', 'plot-axis-form');
   axisForm.hidden = true;
   axisForm.id = id + '-axes';
@@ -694,8 +726,8 @@ function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showH
   observer.observe(chartSvg);
   return {
     disconnect: () => { cancelDrag(); observer.disconnect(); },
-    showPoint: x => {
-      displayValue = { x };
+    showPoint: (x, y) => {
+      displayValue = { x, y };
       renderCursors();
     },
   };
@@ -704,13 +736,14 @@ function createPlot(container, chart, id, onProbe, cursorStore, viewStore, showH
 export function renderCharts(container, charts, onProbe, {
   cursors = chartCursors.get(container) ?? new Map(),
   views = chartViews.get(container) ?? new Map(),
+  exportFile, notify,
 } = {}) {
   chartCursors.set(container, cursors);
   chartViews.set(container, views);
   container.replaceChildren();
-  const plots = charts.map((chart, index) => createPlot(container, chart, container.id + '-clip-' + index, onProbe, cursors, views, index === 0));
+  const plots = charts.map((chart, index) => createPlot(container, chart, container.id + '-clip-' + index, onProbe, cursors, views, index === 0, exportFile, notify));
   return {
     disconnect: () => plots.forEach(plot => plot.disconnect()),
-    showPoint: (chart, x) => plots[chart]?.showPoint(x),
+    showPoint: (chart, x, y) => plots[chart]?.showPoint(x, y),
   };
 }

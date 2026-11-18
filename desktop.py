@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import ctypes
 import importlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +33,7 @@ SESSION_LIMIT = 12_000_000
 MATLAB_FILE_LIMIT = 2_000_000
 MEASUREMENT_CSV_LIMIT = 4_000_000
 CSV_LIMIT = 16_000_000
+FIGURE_LIMIT = 32_000_000
 WEB_MIME = {"": "application/octet-stream", ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8"}
 SOURCE_DOMAINS = {
     "www.oceanoptics.com", "www.shimadzu.com", "www.horiba.com", "www.picoquant.com",
@@ -236,11 +239,11 @@ class BenchRequest(BaseHTTPRequestHandler):
         self._json(200, result)
 
 
-def save_text(path: Path, content: str) -> None:
-    """Replace an experiment file atomically after writing it successfully."""
+def save_bytes(path: Path, content: bytes) -> None:
+    """Replace an experiment file only after writing the replacement successfully."""
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=path.parent, delete=False) as output:
+        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, delete=False) as output:
             temporary = Path(output.name)
             output.write(content)
         os.replace(temporary, path)
@@ -249,9 +252,37 @@ def save_text(path: Path, content: str) -> None:
             temporary.unlink()
 
 
+def save_text(path: Path, content: str) -> None:
+    save_bytes(path, content.encode("utf-8"))
+
+
+def recovery_location() -> Path:
+    if sys.platform == "darwin":
+        directory = Path.home() / "Library" / "Application Support" / "Spectral Bench"
+    elif sys.platform == "win32":
+        directory = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Spectral Bench"
+    else:
+        directory = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "Spectral Bench"
+    return directory / "recovery.json"
+
+
+def validate_recovery(content: str) -> None:
+    if not isinstance(content, str) or len(content.encode("utf-8")) > SESSION_LIMIT:
+        raise ValueError("The recovery copy exceeds the session size limit.")
+    data = json.loads(content)
+    if not isinstance(data, dict) or data.get("format") != "spectral-bench-recovery" or data.get("version") != 1:
+        raise ValueError("The recovery copy is not a supported session.")
+    session = data.get("session")
+    if not isinstance(session, dict) or session.get("format") != "spectral-bench" or session.get("version") != 1:
+        raise ValueError("The recovery copy does not contain a supported session.")
+
+
 class FileDialogs:
-    def __init__(self) -> None:
+    def __init__(self, recovery_path: Path | None = None, recovery_enabled: bool = True) -> None:
         self._window = None
+        self._recovery_path = recovery_path or recovery_location()
+        self._recovery_enabled = recovery_enabled
+        self._recovery_lock = RLock()
 
     def save_csv(self, suggested: str, content: str) -> dict:
         return self._save(suggested, content, "CSV (*.csv)", CSV_LIMIT)
@@ -262,11 +293,76 @@ class FileDialogs:
     def save_session(self, content: str) -> dict:
         return self._save("Spectral Bench session.sblab", content, "Spectral Bench session (*.sblab)", SESSION_LIMIT)
 
-    def _save(self, suggested: str, content: str, file_type: str, limit: int) -> dict:
-        import webview
+    def save_figure(self, suggested: str, content: str, encoding: str = "utf8") -> dict:
+        suffix = Path(suggested).suffix.lower()
+        if not isinstance(content, str):
+            return {"error": "The figure data is invalid."}
+        try:
+            if suffix == ".svg" and encoding == "utf8":
+                data = content.encode("utf-8")
+                if "<svg" not in content[:1000]:
+                    return {"error": "The SVG figure is invalid."}
+                file_type = "SVG vector figure (*.svg)"
+            elif suffix == ".png" and encoding == "base64":
+                if len(content) > (FIGURE_LIMIT + 2) // 3 * 4:
+                    return {"error": "The figure exceeds 32 MB."}
+                data = base64.b64decode(content, validate=True)
+                if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return {"error": "The PNG figure is invalid."}
+                file_type = "PNG figure (*.png)"
+            else:
+                return {"error": "Choose an SVG or PNG figure."}
+        except (ValueError, binascii.Error):
+            return {"error": "The figure data is invalid."}
+        if len(data) > FIGURE_LIMIT:
+            return {"error": "The figure exceeds 32 MB."}
+        return self._save_data(suggested, data, file_type)
 
+    def load_recovery(self) -> dict:
+        if not self._recovery_enabled:
+            return {"content": None}
+        with self._recovery_lock:
+            try:
+                if not self._recovery_path.is_file():
+                    return {"content": None}
+                if self._recovery_path.stat().st_size > SESSION_LIMIT:
+                    return {"error": "The recovery copy exceeds the session size limit."}
+                content = self._recovery_path.read_text(encoding="utf-8")
+                validate_recovery(content)
+                return {"content": content}
+            except (OSError, UnicodeError, ValueError) as error:
+                return {"error": "Could not read the recovery copy: " + str(error)}
+
+    def save_recovery(self, content: str) -> dict:
+        if not self._recovery_enabled:
+            return {"saved": True}
+        with self._recovery_lock:
+            try:
+                validate_recovery(content)
+                self._recovery_path.parent.mkdir(parents=True, exist_ok=True)
+                save_text(self._recovery_path, content)
+                return {"saved": True}
+            except (OSError, UnicodeError, ValueError) as error:
+                return {"error": "Could not save the recovery copy: " + str(error)}
+
+    def clear_recovery(self) -> dict:
+        if not self._recovery_enabled:
+            return {"cleared": True}
+        with self._recovery_lock:
+            try:
+                self._recovery_path.unlink(missing_ok=True)
+                return {"cleared": True}
+            except OSError as error:
+                return {"error": "Could not discard the recovery copy: " + str(error)}
+
+    def _save(self, suggested: str, content: str, file_type: str, limit: int) -> dict:
         if not isinstance(content, str) or len(content.encode("utf-8")) > limit:
             return {"error": "The measurement file is too large."}
+        return self._save_data(suggested, content.encode("utf-8"), file_type)
+
+    def _save_data(self, suggested: str, content: bytes, file_type: str) -> dict:
+        import webview
+
         selected = self._window.create_file_dialog(
             webview.FileDialog.SAVE, save_filename=Path(suggested).name, file_types=(file_type,)
         )
@@ -276,7 +372,7 @@ class FileDialogs:
         if not path.suffix:
             path = path.with_suffix(Path(suggested).suffix)
         try:
-            save_text(path, content)
+            save_bytes(path, content)
         except OSError as error:
             return {"error": str(error)}
         return {"name": path.name}
@@ -388,7 +484,7 @@ def main() -> None:
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            dialogs = FileDialogs()
+            dialogs = FileDialogs(recovery_enabled=not args.smoke_ui)
             window = webview.create_window(
                 f"Spectral Bench {APP_VERSION} — Instrument Laboratory",
                 url=server.origin,
@@ -428,7 +524,31 @@ def main() -> None:
                     })()""")
                     if not result or server.transforms_served < 3:
                         raise RuntimeError(f"Native window or C FFT verification failed ({server.transforms_served} transforms).")
+                    window.evaluate_js("""(() => {
+                        window.__fitSmoke = {pending:true};
+                        (async () => {
+                            try {
+                                const {startTraceFit} = await import('/app/fit-runner.js');
+                                const x = Array.from({length:50},(_,i)=>i/5);
+                                const task = startTraceFit({x,y:x.map((v,i)=>2*v+1+(i%3-1)*0.01)},{model:'linear'});
+                                const fit = await task.promise;
+                                window.__fitSmoke = {ok:Math.abs(fit.parameters[0].value-2)<0.01, execution:task.execution};
+                            } catch(error) { window.__fitSmoke = {error:String(error)}; }
+                        })();
+                        return true;
+                    })()""")
+                    deadline = monotonic() + 12
+                    while True:
+                        fit = window.evaluate_js("window.__fitSmoke")
+                        if not fit.get('pending'):
+                            break
+                        if monotonic() >= deadline:
+                            raise RuntimeError('Background fitting did not respond in the native window.')
+                        sleep(0.05)
+                    if not fit.get('ok') or fit.get('execution') != 'worker':
+                        raise RuntimeError(f'Native background fitting verification failed: {fit}')
                     print(f"Native window verified with {server.transforms_served} C FFT calls.", flush=True)
+                    print('Module-worker fitting verified in the native window.', flush=True)
                 except Exception as error:
                     smoke_errors.append(error)
                 finally:

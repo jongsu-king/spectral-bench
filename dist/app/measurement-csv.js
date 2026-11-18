@@ -132,17 +132,37 @@ function selectDelimiter(text) {
 }
 
 function sortedPairs(pairs) {
-  pairs.sort((a, b) => a[0] - b[0]);
-  return { x: pairs.map(pair => pair[0]), y: pairs.map(pair => pair[1]) };
+  // An unknown X cannot be placed on the axis. Keep it as a run barrier, sort
+  // within each run, then order runs by their first coordinate. Overlapping
+  // runs remain separate rather than inventing a connection through the gap.
+  const runs = [];
+  let current;
+  for (const pair of pairs) {
+    if (!Number.isFinite(pair[0])) { current = null; continue; }
+    if (!current) runs.push(current = []);
+    current.push(pair);
+  }
+  for (const run of runs) run.sort((a, b) => a[0] - b[0]);
+  runs.sort((a, b) => a[0][0] - b[0][0]);
+  const ordered = [];
+  for (const run of runs) {
+    if (ordered.length) ordered.push([null, null]);
+    ordered.push(...run);
+  }
+  return { x: ordered.map(pair => pair[0]), y: ordered.map(pair => pair[1]) };
 }
 
 function addPair(pairs, x, y) {
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
   if (pairs.length >= MAX_MEASUREMENT_POINTS) {
-    throw new Error('A measurement trace may contain up to ' + MAX_MEASUREMENT_POINTS.toLocaleString('en-US') + ' points.');
+    throw new Error('A measurement trace may contain up to ' + MAX_MEASUREMENT_POINTS.toLocaleString('en-US') + ' points, including missing observations.');
   }
-  pairs.push([x, y]);
-  return true;
+  const validX = Number.isFinite(x), validY = Number.isFinite(y);
+  pairs.push(validX ? [x, validY ? y : null] : [null, null]);
+  return validX && validY;
+}
+
+function finitePairCount(pairs) {
+  return pairs.reduce((count, pair) => count + Number(Number.isFinite(pair[0]) && Number.isFinite(pair[1])), 0);
 }
 
 function parseNativeTraces(rows, indexes, delimiter) {
@@ -163,7 +183,7 @@ function parseNativeTraces(rows, indexes, delimiter) {
   }
   const traces = [];
   for (const { identity, pairs, skipped } of groups.values()) {
-    if (pairs.length < 2) continue;
+    if (finitePairCount(pairs) < 2) continue;
     const [instrument, acquisition, chartTitle, name, xLabel, yLabel] = identity.map(label);
     traces.push({ instrument, acquisition, chartTitle, name, xLabel, yLabel, ...sortedPairs(pairs), skipped });
   }
@@ -213,7 +233,7 @@ export function measurementPairs(parsed, xColumn, yColumn) {
   for (const row of parsed.rows) {
     if (!addPair(pairs, row[xColumn], row[yColumn])) skipped++;
   }
-  if (pairs.length < 2) throw new Error('The selected columns need at least two numeric X/Y pairs.');
+  if (finitePairCount(pairs) < 2) throw new Error('The selected columns need at least two numeric X/Y pairs.');
   return { xLabel: parsed.columns[xColumn], yLabel: parsed.columns[yColumn], ...sortedPairs(pairs), skipped };
 }
 
@@ -223,8 +243,10 @@ export function validateMeasurementTrace(value) {
       x.length < 2 || x.length > MAX_MEASUREMENT_POINTS) return null;
   const pairs = [];
   for (let index = 0; index < x.length; index++) {
-    if (!addPair(pairs, x[index], y[index])) return null;
+    if ((x[index] !== null && !Number.isFinite(x[index])) || (y[index] !== null && !Number.isFinite(y[index]))) return null;
+    addPair(pairs, x[index], y[index]);
   }
+  if (finitePairCount(pairs) < 2) return null;
   return { xLabel: label(value.xLabel), yLabel: label(value.yLabel), ...sortedPairs(pairs) };
 }
 

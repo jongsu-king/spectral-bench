@@ -9,6 +9,9 @@
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./workbench.css">
   <link rel="stylesheet" href="./plot-navigation.css">
+  <link rel="stylesheet" href="./session-recovery.css">
+  <link rel="stylesheet" href="./trace-analysis.css">
+  <link rel="stylesheet" href="./alignment-map.css">
   <script src="./app/runtime.js"></script>
   <script type="module" src="./app/main.js"></script>
 </head>
@@ -23,6 +26,12 @@
       </div>
     </div>
   </header>
+
+  <div class="recovery-banner" id="recovery-banner" role="status" hidden>
+    <span id="recovery-message"></span>
+    <button type="button" class="button" id="recovery-restore">Restore session</button>
+    <button type="button" class="button subtle-button" id="recovery-discard">Discard copy</button>
+  </div>
 
   <main class="workspace">
     <nav id="instruments" class="instruments" aria-label="Instruments"></nav>
@@ -239,6 +248,7 @@
             </div>
           </div>
         </details>
+        <div id="instrument-alignment-map"></div>
         <p id="photon-state" class="photon-state" role="status" hidden></p>
       </section>
 
@@ -253,6 +263,7 @@
             <button type="button" class="button" data-plot-display="graph" aria-pressed="true">Graph</button>
             <button type="button" class="button" data-plot-display="table" aria-pressed="false">Data</button>
             <button type="button" class="button" data-plot-display="fit" aria-pressed="false">Fit</button>
+            <button type="button" class="button" data-plot-display="stats" aria-pressed="false">Stats</button>
             <button type="button" class="button" data-plot-display="map" aria-pressed="false">3D map</button>
           </div>
           <div class="instrument-export-actions plot-commands">
@@ -294,7 +305,9 @@
           </div>
           <output id="fit-status" class="analysis-status" aria-live="polite"></output>
           <div id="fit-parameters" class="fit-parameters"></div>
+          <p id="fit-uncertainty" class="model-note" hidden></p>
         </div>
+        <div id="trace-analysis" class="analysis-panel" hidden></div>
         <div id="map-panel" class="analysis-panel" hidden>
           <div class="analysis-tools" id="map-controls">
             <label>Vary <select id="map-axis"></select></label>
@@ -317,10 +330,11 @@
         <details class="run-log" id="run-log" hidden><summary>Acquisition log</summary><ol id="run-entries"></ol></details>
       </section>
     </div>
-    <footer class="workspace-footer workspace-status"><span class="simulation-label"><span></span>Simulation</span><a id="source-link" target="_blank" rel="noopener noreferrer">Instrument reference ↗</a></footer>
+    <footer class="workspace-footer workspace-status"><span class="simulation-label"><span></span>Simulation</span><output id="recovery-status" class="recovery-status"></output><a id="source-link" target="_blank" rel="noopener noreferrer">Instrument reference ↗</a></footer>
     </section>
   </main>
   <div class="file-status" id="file-status" role="status" hidden></div>
+  <input type="file" id="session-file" accept=".sblab,application/json" hidden>
 
   <dialog id="measurement-import-dialog" aria-labelledby="measurement-import-title">
     <div class="dialog-head"><h2 id="measurement-import-title">Import measured trace</h2><form method="dialog"><button class="button icon-button" aria-label="Close" data-icon="close"></button></form></div>

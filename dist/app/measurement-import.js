@@ -116,8 +116,11 @@ export function createMeasurementImport({ context, openNative, apply, toggle, cl
       if (!target) throw new Error('Select a simulation trace.');
       const pairs = selectedPairs();
       if (axisMismatch(pairs, target)) throw new Error('The CSV units differ from the plot units. Select compatible columns and a plot.');
-      output.textContent = pairs.x.length.toLocaleString() + ' samples' +
-        (pairs.skipped ? ' · ' + pairs.skipped.toLocaleString() + ' rows without numeric pairs skipped' : '') +
+      const finiteCount = pairs.x.reduce((count, x, index) => count + Number(Number.isFinite(x) && Number.isFinite(pairs.y[index])), 0);
+      const maskedCount = pairs.x.length - finiteCount;
+      output.textContent = finiteCount.toLocaleString() + ' finite samples' +
+        (maskedCount ? ' · ' + maskedCount.toLocaleString() + ' missing observations / run barriers retained' : '') +
+        (pairs.skipped ? ' · ' + pairs.skipped.toLocaleString() + ' input rows without a finite X/Y pair' : '') +
         ' · X and Y are used in the units of the selected plot.';
       output.dataset.error = 'false';
       applyButton.disabled = false;
@@ -233,8 +236,11 @@ export function createMeasurementImport({ context, openNative, apply, toggle, cl
       el('measurement-overlay').checked = show;
       el('measurement-clear').disabled = !measurement;
       const status = el('measurement-import-status');
-      const description = measurement ? measurement.filename + ' · ' + measurement.x.length.toLocaleString() +
-        ' samples · ' + measurement.target.title : 'No measured trace';
+      const finiteCount = measurement?.x.reduce((count, x, index) => count + Number(Number.isFinite(x) && Number.isFinite(measurement.y[index])), 0) ?? 0;
+      const maskedCount = (measurement?.x.length ?? 0) - finiteCount;
+      const description = measurement ? measurement.filename + ' · ' + finiteCount.toLocaleString() +
+        ' finite samples' + (maskedCount ? ' · ' + maskedCount.toLocaleString() + ' missing observations / run barriers' : '') +
+        ' · ' + measurement.target.title : 'No measured trace';
       if (status.textContent !== description) status.textContent = description;
       const output = el('measurement-comparison');
       const statistics = comparison?.statistics;

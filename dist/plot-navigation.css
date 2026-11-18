@@ -36,3 +36,7 @@
 .plot-axis-error { flex: 1 0 100%; color: #883128; font-size: 10px; }
 .plot-axis-error:empty { display: none; }
 .plot-card svg.is-zooming { cursor: crosshair; touch-action: none; }
+.plot-figure-actions { display: inline-flex; gap: 3px; margin-left: auto; }
+.plot-figure-status { color: var(--muted); font-size: 10px; }
+.plot-figure-status:empty { display: none; }
+.plot-figure-status[data-error=true] { flex-basis: 100%; color: #883128; }

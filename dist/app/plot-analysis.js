@@ -1,5 +1,6 @@
 import { formatNumber } from './charts.js';
-import { fitModels, fitTrace } from './plot-fit.js';
+import { fitModels } from './plot-fit.js';
+import { startTraceFit } from './fit-runner.js';
 import { renderSurfacePlot } from './surface-plot.js';
 
 const el = id => document.getElementById(id);
@@ -72,7 +73,11 @@ function pointRange(entry) {
 }
 
 export function createPlotAnalysis({ repaint, exportFile, reference, calculate }) {
-  let fitContext, mapContext, job, surface, displayedSurface;
+  let fitContext, mapContext, job, surface, displayedSurface, fitJob;
+  const fitStop = document.createElement('button');
+  fitStop.id = 'fit-stop'; fitStop.type = 'button'; fitStop.className = 'button';
+  fitStop.textContent = 'Stop fit'; fitStop.hidden = true;
+  el('fit-run').after(fitStop);
   updateOptions(el('fit-model'), Object.entries(fitModels), 'gaussian');
 
   function fitState(context) {
@@ -81,14 +86,34 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
     if (state.fitPanel?.key !== key) {
       state.fitPanel = {
         key, series: rankedSignal(chart?.series ?? []),
-        model: defaultFit[id] ?? 'gaussian', min: '', max: '', output: null, error: '',
+        model: defaultFit[id] ?? 'gaussian', min: '', max: '', output: null, error: '', message: '',
       };
     }
     return state.fitPanel;
   }
 
+  function stopFit(message = 'Fit stopped.', shouldRepaint = true) {
+    if (!fitJob) return;
+    const stopped = fitJob;
+    fitJob = null;
+    stopped.task?.cancel();
+    stopped.fit.message = message;
+    fitStop.hidden = true;
+    if (shouldRepaint) repaint();
+  }
+
+  function sameFit(record, context = fitContext) {
+    const fit = context?.state.fitPanel;
+    const entry = context?.chart?.series?.[fit?.series];
+    return Boolean(context && context.id === record.context.id && context.state === record.context.state &&
+      context.chartIndex === record.context.chartIndex && context.result === record.context.result &&
+      context.state.display === 'fit' && fit === record.fit && entry?.x === record.x && entry?.y === record.y &&
+      fit.model === record.model && fit.min === record.min && fit.max === record.max);
+  }
+
   function fitInputs() {
     if (!fitContext) return;
+    stopFit('', false);
     const fit = fitState(fitContext);
     fit.series = Number(el('fit-trace').value);
     fit.model = el('fit-model').value;
@@ -96,6 +121,7 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
     fit.max = el('fit-max').value;
     fit.output = null;
     fit.error = '';
+    fit.message = '';
   }
 
   function syncFitCursors() {
@@ -105,6 +131,7 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
   }
 
   function renderFit(context) {
+    if (fitJob && !sameFit(fitJob, context)) stopFit('Trace or fit settings changed. Run the fit again.', false);
     fitContext = context;
     const { chart, state } = context;
     const fit = fitState(context);
@@ -121,12 +148,19 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
       input.setAttribute('aria-label', (id.endsWith('min') ? 'Lower' : 'Upper') + ' fit limit' + (chart?.xLabel ? ' · ' + chart.xLabel : ''));
     }
     syncFitCursors();
-    el('fit-run').disabled = !isNumber(low) || low === high;
+    const busy = fitJob?.fit === fit;
+    el('fit-run').disabled = busy || !isNumber(low) || low === high;
+    el('fit-run').setAttribute('aria-busy', String(busy));
+    fitStop.hidden = !busy;
+    fitStop.disabled = busy && fitJob.execution?.cancellable === false;
+    fitStop.title = fitStop.disabled ? 'This browser is using a bounded foreground fit, which cannot be interrupted once calculation starts.' : 'Terminate the background fit';
     const result = fit.output?.x === entry?.x && fit.output?.y === entry?.y ? fit.output?.result : null;
     const status = el('fit-status');
     const xUnit = unit(chart?.xLabel);
     const yUnit = unit(chart?.yLabel);
-    status.textContent = fit.error || (result
+    status.textContent = busy ? (fitJob.execution?.mode === 'foreground'
+      ? 'Fitting in foreground · background worker unavailable · n=' + fitJob.task.count
+      : 'Fitting… · background worker · n=' + (fitJob.task?.count ?? fitJob.execution?.count ?? 0)) : fit.error || fit.message || (result
       ? (result.converged ? 'Fit converged' : 'Fit did not converge') + ' · n=' + result.count +
         ' · RMSE ' + formatNumber(result.rmse, 5) + (yUnit ? ' ' + yUnit : '') +
         (isNumber(result.r2) ? ' · R² ' + formatNumber(result.r2, 5) : '') +
@@ -138,10 +172,18 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
       const value = document.createElement('b');
       const u = param.unit === 'x' ? xUnit : param.unit === 'y' ? yUnit
         : param.unit === 'y/x' && yUnit && xUnit ? yUnit + '/' + xUnit : '';
-      value.textContent = formatNumber(param.value, 6) + (u ? ' ' + u : '');
+      value.textContent = formatNumber(param.value, 6) + (Number.isFinite(param.standardError)
+        ? ' ± ' + formatNumber(param.standardError, 3) : '') + (u ? ' ' + u : '') + (param.fixed ? ' (fixed)' : '');
+      if (Number.isFinite(param.standardError)) value.title = 'Estimate ± one standard error';
       field.append(param.name + ' ', value);
       return field;
     }));
+    const uncertainty = el('fit-uncertainty');
+    uncertainty.hidden = !result;
+    uncertainty.textContent = result ? result.uncertainty?.available
+      ? '± values are local standard errors from unweighted least squares (n−p=' + result.degreesOfFreedom +
+        '). They assume independent errors with equal variance and exclude calibration and model uncertainty.'
+      : 'Standard errors unavailable. ' + (result.uncertainty?.reason ?? '') : '';
     if (!chart) return [];
     if (!result) return [chart];
     return [
@@ -161,19 +203,34 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
     [el('fit-min').value, el('fit-max').value] = [pins.a.x, pins.b.x].sort((a, b) => a - b);
     fitInputs(); repaint();
   });
-  el('fit-run').addEventListener('click', () => {
+  el('fit-run').addEventListener('click', async () => {
+    if (!fitContext || fitJob) return;
     fitInputs();
     const fit = fitState(fitContext);
     const entry = fitContext.chart?.series?.[fit.series];
+    if (!entry) return;
+    const record = { context: fitContext, fit, x: entry.x, y: entry.y, model: fit.model, min: fit.min, max: fit.max };
+    fitJob = record;
     try {
-      const result = fitTrace(entry, {
+      record.task = startTraceFit(entry, {
         model: fit.model, min: fit.min === '' ? undefined : Number(fit.min), max: fit.max === '' ? undefined : Number(fit.max),
-      });
-      fit.output = { result, x: entry.x, y: entry.y, title: fitContext.chart.title, name: entry.name,
-        xLabel: fitContext.chart.xLabel, yLabel: fitContext.chart.yLabel };
-    } catch (error) { fit.error = error.message; }
-    repaint();
+      }, { onExecution(execution) {
+        record.execution = execution;
+        if (fitJob === record && record.task) repaint();
+      } });
+      repaint();
+      const result = await record.task.promise;
+      if (fitJob !== record || !sameFit(record)) return;
+      fit.output = { result, x: entry.x, y: entry.y, title: record.context.chart.title, name: entry.name,
+        xLabel: record.context.chart.xLabel, yLabel: record.context.chart.yLabel };
+      fit.message = '';
+    } catch (error) {
+      if (fitJob === record && sameFit(record) && error.name !== 'AbortError') fit.error = error.message || 'The fit could not be completed.';
+    } finally {
+      if (fitJob === record) { fitJob = null; repaint(); }
+    }
   });
+  fitStop.addEventListener('click', () => stopFit());
 
   function currentFit(result, state) {
     const fit = state.fitPanel?.output;
@@ -342,5 +399,5 @@ export function createPlotAnalysis({ repaint, exportFile, reference, calculate }
     exportFile('spectral-bench-' + mapContext.id + '-map.csv', '\uFEFF' + rows.join('\r\n'));
   });
 
-  return { renderFit, currentFit, syncFitCursors, renderMap, stopMap };
+  return { renderFit, currentFit, syncFitCursors, renderMap, stopMap, stopFit };
 }

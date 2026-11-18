@@ -1,0 +1,18 @@
+.recovery-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 22px;
+  border-bottom: 1px solid #b4b2a2;
+  background: #eee9d6;
+  color: #38382d;
+  font-size: 12px;
+}
+.recovery-banner[hidden] { display: none; }
+.recovery-banner > span { margin-right: auto; }
+.recovery-status { margin-left: auto; font-size: 11px; color: #686a63; }
+@media (max-width: 700px) {
+  .recovery-banner { flex-wrap: wrap; padding: 8px 12px; }
+  .recovery-banner > span { flex-basis: 100%; }
+  .recovery-status { display: none; }
+}
