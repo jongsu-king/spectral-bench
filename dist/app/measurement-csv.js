@@ -203,7 +203,9 @@ export function parseMeasurementFile(text) {
   const delimiter = selectDelimiter(content);
   const rows = readRows(content, delimiter, MAX_ROWS + 1);
   if (rows.length > MAX_ROWS) throw new Error('The measurement file has too many rows.');
-  while (rows[0]?.fields.every(value => value === '')) rows.shift();
+  let leading = 0;
+  while (rows[leading]?.fields.every(value => value === '')) leading++;
+  if (leading) rows.splice(0, leading);
   if (!rows.length) throw new Error('The measurement file needs at least two rows with numeric X/Y values.');
 
   const header = rows[0].fields;
