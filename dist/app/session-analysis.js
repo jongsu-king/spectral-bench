@@ -3,6 +3,8 @@ import { fitModels } from './plot-fit.js';
 const index = value => Number.isInteger(value) && value >= 0 && value < 128 ? value : 0;
 const numberText = value => value === '' || value == null ? '' : Number.isFinite(Number(value)) && String(value).length <= 64 ? String(value) : '';
 const key = value => typeof value === 'string' && value.length <= 1000 ? value : null;
+const numeric = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') &&
+  Number.isFinite(Number(value)) ? Number(value) : NaN;
 
 function panel(value) {
   return value && key(value.key) !== null ? { key: value.key, series: index(value.series), min: numberText(value.min),
@@ -19,9 +21,10 @@ export function restoreAnalysisSettings(saved, controls = []) {
   });
   const map = saved?.map;
   const axis = controls.find(control => control.type === 'range' && control.key === map?.key);
-  const mapSettings = axis && [map.min, map.max].every(Number.isFinite) && map.min < map.max &&
-    map.min >= axis.min && map.max <= axis.max ? { key: axis.key, min: map.min, max: map.max,
-      steps: Number.isInteger(map.steps) ? Math.max(5, Math.min(31, map.steps)) : 13 } : null;
+  const low = numeric(map?.min), high = numeric(map?.max), steps = numeric(map?.steps);
+  const mapSettings = axis && [low, high].every(Number.isFinite) && low < high &&
+    low >= axis.min && high <= axis.max ? { key: axis.key, min: low, max: high,
+      steps: Number.isInteger(steps) ? Math.max(5, Math.min(31, steps)) : 13 } : null;
   return { fitPanel, traceAnalysis, mapSettings };
 }
 
@@ -32,7 +35,8 @@ export function serializeAnalysisSettings(state) {
     fit: state.fitPanel ? { ...inputs(state.fitPanel), model: state.fitPanel.model } : null,
     statistics: state.traceAnalysis ? { ...inputs(state.traceAnalysis), baseline: state.traceAnalysis.baseline,
       baselineValue: state.traceAnalysis.baselineValue } : null,
-    map: state.mapSettings ? { ...state.mapSettings } : null,
+    map: state.mapSettings ? { key: state.mapSettings.key, min: numeric(state.mapSettings.min),
+      max: numeric(state.mapSettings.max), steps: numeric(state.mapSettings.steps) } : null,
   };
 }
 

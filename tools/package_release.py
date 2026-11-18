@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 from pathlib import Path
 import plistlib
 import subprocess
@@ -73,9 +74,25 @@ def main() -> None:
     finally:
         run(["hdiutil", "detach", str(mount)])
 
+    artifacts = [image, archive_path]
+    windows = RELEASES / 'Spectral-Bench-Windows-x64.zip'
+    if windows.is_file():
+        with ZipFile(windows) as archive:
+            if archive.testzip() is not None:
+                raise RuntimeError('The Windows portable archive is damaged.')
+            info = json.loads(archive.read('Spectral Bench/BUILD.json'))
+            if info['version'] != version or archive.read('Spectral Bench/_internal/VERSION').decode().strip() != version:
+                raise RuntimeError('Rebuild the Windows portable archive for the current VERSION.')
+            for source in (ROOT / 'dist').rglob('*'):
+                if source.is_file() and source.read_bytes() != archive.read('Spectral Bench/_internal/web/' + source.relative_to(ROOT / 'dist').as_posix()):
+                    raise RuntimeError(f'The Windows archive contains a different asset: {source.relative_to(ROOT)}')
+            if not archive.read('Spectral Bench/Spectral Bench.exe').startswith(b'MZ'):
+                raise RuntimeError('The Windows archive is missing its executable.')
+            archive.getinfo('Spectral Bench/_internal/native/bench_native.dll')
+        artifacts.append(windows)
     checksums = RELEASES / "SHA256SUMS.txt"
-    checksums.write_text("".join(f"{sha256(file.read_bytes()).hexdigest()}  {file.name}\n" for file in [image, archive_path]), encoding="utf-8")
-    print(f"Verified release {version}: {image.name}, {archive_path.name}, {checksums.name}")
+    checksums.write_text("".join(f"{sha256(file.read_bytes()).hexdigest()}  {file.name}\n" for file in artifacts), encoding="utf-8")
+    print(f"Verified release {version}: " + ', '.join(file.name for file in artifacts) + ', ' + checksums.name)
 
 
 if __name__ == "__main__":

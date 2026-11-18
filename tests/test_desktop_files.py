@@ -54,7 +54,7 @@ class FileTests(unittest.TestCase):
         self.dialogs._window = FakeWindow([str(path)])
         svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>ΔA · µm</text></svg>'
         self.assertEqual(self.dialogs.save_figure('plot.svg', svg), {'name': 'figure.svg'})
-        self.assertEqual(path.with_suffix('.svg').read_text(), svg)
+        self.assertEqual(path.with_suffix('.svg').read_text(encoding='utf-8'), svg)
 
     def test_figure_rejects_invalid_encoding_and_honors_cancel(self):
         self.assertIn('error', self.dialogs.save_figure('plot.png', 'not base64', 'base64'))

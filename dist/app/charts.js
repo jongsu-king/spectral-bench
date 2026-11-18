@@ -60,9 +60,10 @@ function tickValues(min, max, count) {
 
 export function formatNumber(value, digits = 3) {
   if (!Number.isFinite(value)) return '—';
+  const precision = Number.isInteger(digits) ? Math.max(1, Math.min(12, digits)) : 3;
   const magnitude = Math.abs(value);
-  if (magnitude !== 0 && (magnitude >= 1e5 || magnitude < 0.001)) return value.toExponential(1);
-  return Number(value.toPrecision(digits)).toLocaleString('en-US', { maximumFractionDigits: 6 });
+  if (magnitude !== 0 && (magnitude >= 1e5 || magnitude < 0.001)) return value.toExponential(precision - 1);
+  return Number(value.toPrecision(precision)).toLocaleString('en-US', { maximumFractionDigits: 6 });
 }
 
 function closest(sequence, target) {

@@ -28,6 +28,15 @@ test('malformed analysis settings and out-of-bounds sweep ranges cannot enter re
   assert.equal(restored.mapSettings, null);
 });
 
+test('edited map inputs survive Save/Open before running the map', () => {
+  const controls = [{ type: 'range', key: 'concentration', min: 0, max: 2 }];
+  const state = { mapSettings: { key: 'concentration', min: '0.2', max: '1.7', steps: '9' } };
+  const saved = JSON.parse(JSON.stringify(serializeAnalysisSettings(state)));
+  assert.deepEqual(restoreAnalysisSettings(saved, controls).mapSettings,
+    { key: 'concentration', min: 0.2, max: 1.7, steps: 9 });
+  assert.equal(restoreAnalysisSettings({ map: { ...state.mapSettings, min: '' } }, controls).mapSettings, null);
+});
+
 test('A/B cursors round-trip finite line and map coordinates, excluding invalid entries', () => {
   const values = [['line', { a: { x: 3 }, b: { x: 18 } }], ['map', { a: { x: 540, y: 2.5 }, b: null }],
     ['bad', { a: { x: 1, y: NaN } }], [null, { a: { x: 3 } }]];
